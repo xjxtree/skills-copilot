@@ -85,10 +85,6 @@ struct HeaderView: View {
                     conflictBadge
                         .frame(width: 220)
                 }
-                if !hasIssues && !hasConflicts {
-                    healthyStatus
-                        .frame(width: 220)
-                }
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -102,9 +98,6 @@ struct HeaderView: View {
                     }
                     if hasConflicts {
                         conflictBadge
-                    }
-                    if !hasIssues && !hasConflicts {
-                        healthyStatus
                     }
                 }
             }
@@ -129,19 +122,6 @@ struct HeaderView: View {
             tint: .red,
             action: { onSelectSection(.conflicts) }
         )
-    }
-
-    private var healthyStatus: some View {
-        Label(
-            UIStrings.text("detail.health.clear", "No issues or same-agent conflicts"),
-            systemImage: "checkmark.circle.fill"
-        )
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(.green)
-        .padding(.horizontal, 10)
-        .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-        .background(Color.green.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-        .accessibilityLabel(UIStrings.text("detail.health.clear", "No issues or same-agent conflicts"))
     }
 
     private var hasIssues: Bool {
@@ -305,29 +285,33 @@ struct HistorySection: View {
 
 struct SkillActivityRow: View {
     let event: SkillEventRecord
-    @AppStorage(DisplayText.screenshotPrivacyModeStorageKey) private var privacyModeEnabled = true
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: "switch.2")
                 .foregroundStyle(.secondary)
                 .frame(width: 18)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(activityTitle)
-                    .font(.subheadline.bold())
-                Text(DisplayText.timestamp(event.occurredAt))
-                    .font(.caption)
+            Text(activityTitle)
+                .font(.subheadline.bold())
+                .lineLimit(1)
+
+            if activityTitle != event.kind {
+                Text(event.kind)
+                    .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
-                if let payloadSummary {
-                    Text(payloadSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
-                        .textSelection(.enabled)
-                }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.agentCopilotWindowBackground, in: Capsule())
+                    .lineLimit(1)
             }
+
             Spacer()
+
+            Text(DisplayText.timestamp(event.occurredAt))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
         }
         .padding(10)
         .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 8))
@@ -340,11 +324,6 @@ struct SkillActivityRow: View {
         return event.kind
     }
 
-    private var payloadSummary: String? {
-        let rawSummary = event.payload.compactDisplayString
-        let summary = privacyModeEnabled ? DisplayText.redactLocalPath(rawSummary) : rawSummary
-        return summary.isEmpty ? nil : "\(UIStrings.activityPayload): \(summary)"
-    }
 }
 
 struct CountBadge: View {

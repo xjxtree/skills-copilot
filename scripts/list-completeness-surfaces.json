@@ -61,7 +61,7 @@
       "total_count_source": "local-session page metadata total_count",
       "status_id": "sessions.completeness",
       "full_access_id": "sessions.load-all",
-      "allowed_limitations": ["safety_budget", "source_changed", "page_failed"]
+      "allowed_limitations": ["safety_budget", "source_changed", "page_failed", "unreadable_source"]
     },
     {
       "id": "sessions.detail-messages",
@@ -75,6 +75,19 @@
       "status_id": "session-messages.completeness",
       "full_access_id": "session-messages.load-all",
       "allowed_limitations": ["source_changed", "page_failed", "unsupported_protocol"]
+    },
+    {
+      "id": "task-preflight.history",
+      "file": "apps/macos/Sources/SkillsCopilot/Views/TaskCockpitPanel.swift",
+      "owner": "TaskPreflightHistoryPanel",
+      "source": "visibleRecords",
+      "policy": "paged",
+      "control_scope": "body",
+      "control_anchor": "state: historyCompleteness",
+      "total_count_source": "date-filtered in-memory Task Preflight record count",
+      "status_id": "task-cockpit-history.completeness",
+      "full_access_id": "task-cockpit-history.load-all",
+      "allowed_limitations": []
     },
     {
       "id": "config.history",

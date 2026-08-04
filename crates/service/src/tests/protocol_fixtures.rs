@@ -179,6 +179,10 @@ struct WireSkillManagerCommandPreview {
     preview_token: String,
     summary: String,
     risks: Vec<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    skills: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -197,6 +201,26 @@ struct WireSkillManagerCommandOutput {
     exit_code: Option<i32>,
     stdout: String,
     stderr: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireSkillManagerLocalSourceInspectionRecord {
+    preview: WireSkillManagerCommandPreview,
+    output: WireSkillManagerCommandOutput,
+    source_path: String,
+    source_revision: String,
+    skills: Vec<WireSkillManagerLocalSourceSkillRecord>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireSkillManagerLocalSourceSkillRecord {
+    name: String,
+    description: String,
+    relative_path: String,
 }
 
 #[allow(dead_code)]
@@ -251,6 +275,7 @@ struct WireSkillManagerInstalledRecord {
     source: Option<String>,
     source_kind: String,
     agents: Vec<String>,
+    separable_agents: Vec<String>,
     scope: Option<String>,
     path: Option<String>,
 }
@@ -770,6 +795,25 @@ pub(super) fn decode_response_fixture(method: &str, result: &Value, path: &Path)
             assert_eq!(installed.preview.operation, "listInstalled");
             assert!(installed.preview.command.iter().any(|arg| arg == "--json"));
             assert!(!installed.installed.is_empty());
+        }
+        "skillManager.inspectLocalSource" => {
+            let inspection: WireSkillManagerLocalSourceInspectionRecord =
+                decode_fixture_result(method, result, path);
+            assert_eq!(inspection.preview.operation, "inspectLocalSource");
+            assert!(!inspection.preview.requires_confirmation);
+            assert!(!inspection.preview.network_required);
+            assert!(inspection.preview.command.iter().any(|arg| arg == "--list"));
+            assert!(inspection
+                .preview
+                .command
+                .iter()
+                .any(|arg| arg == "--full-depth"));
+            assert!(inspection.source_revision.starts_with("sha256:"));
+            assert!(!inspection.skills.is_empty());
+            assert!(inspection
+                .skills
+                .iter()
+                .all(|skill| skill.relative_path.ends_with("SKILL.md")));
         }
         "skillManager.previewInstall"
         | "skillManager.applyInstall"

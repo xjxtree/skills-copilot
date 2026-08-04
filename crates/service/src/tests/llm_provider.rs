@@ -43,6 +43,536 @@ fn task_cockpit_transport_success_requires_business_schema() {
 }
 
 #[test]
+fn provider_output_headroom_is_task_specific_and_does_not_retruncate_preflight() {
+    assert_eq!(
+        crate::provider::provider_output_token_limit("task_cockpit", 5_000, 4_096, 128_000),
+        8_000,
+        "Task Preflight may continue beyond its expected output size"
+    );
+    assert_eq!(
+        crate::provider::provider_output_token_limit("task_cockpit", 5_000, 4_096, 9_500),
+        8_000,
+        "Task Preflight input has already been selected and must retain enough completion headroom"
+    );
+    assert_eq!(
+        crate::provider::provider_output_token_limit("analyze", 5_000, 1_400, 128_000),
+        1_400,
+        "other actions must retain their existing output limit"
+    );
+}
+
+#[test]
+fn task_cockpit_output_limit_is_specific_and_session_only() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-task-cockpit-output-limit-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let truncated_output = r#"{"summary":{"summary":"incomplete"},"agent_candidates":[],"skill_candidates":[{"reasons":["cut off"#;
+    let (base_url, server) =
+        spawn_mock_openai_server_with_content_and_finish_reason(truncated_output, "length");
+    let host = test_host(app_data_dir.clone());
+    let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
+    seed_catalog_with_llm_skill(&host, &skill_path);
+
+    let save = host.handle(ServiceRequest {
+        id: Some("provider-save".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params: json!({
+            "id": "mock-openai-task-cockpit-limit",
+            "display_name": "Mock OpenAI Task Cockpit Limit",
+            "provider_type": "openai-compatible",
+            "base_url": base_url,
+            "model": "mock-model",
+            "enabled": true,
+            "single_request_token_limit": 12_000,
+            "monthly_budget_usd": 10.0
+        }),
+    });
+    assert!(save.ok, "{:?}", save.error);
+    let _secret_env_guard = EnvVarGuard::set(
+        "SKILLS_COPILOT_TEST_SECRET_PROVIDER_MOCK_OPENAI_TASK_COCKPIT_LIMIT",
+        "test-secret-key",
+    );
+
+    let sensitive_task = "SENSITIVE_TASK_COCKPIT_TASK";
+    let request = json!({
+        "action": "task_cockpit",
+        "app_language": "en",
+        "agents": ["claude-code"],
+        "instance_ids": ["llm-skill-id"],
+        "user_intent": sensitive_task
+    });
+    let preview = host.handle(ServiceRequest {
+        id: Some("preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: request.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview_result = preview.result.expect("preview result");
+    let preview_id = preview_result
+        .get("preview_id")
+        .and_then(Value::as_str)
+        .expect("preview id")
+        .to_string();
+
+    let confirm = host.handle(ServiceRequest {
+        id: Some("confirm".to_string()),
+        method: "llm.confirmPromptAndSend".to_string(),
+        params: json!({
+            "preview_id": preview_id,
+            "confirmation_id": "confirm-task-cockpit-output-limit",
+            "request": request,
+            "timeout_ms": 2_000
+        }),
+    });
+    assert!(confirm.ok, "{:?}", confirm.error);
+    let result = confirm.result.expect("confirm result");
+
+    assert_eq!(
+        preview_result
+            .get("estimated_output_tokens")
+            .and_then(Value::as_u64),
+        Some(4_096),
+        "Task Preflight must reserve enough output for its required JSON shape"
+    );
+    assert_eq!(
+        result.get("status").and_then(Value::as_str),
+        Some("parse_failed")
+    );
+    assert_eq!(
+        result.pointer("/audit/error_code").and_then(Value::as_str),
+        Some("response_truncated"),
+        "a provider token-limit stop must not look like a generic JSON schema failure"
+    );
+    assert_eq!(
+        result.get("draft_output").and_then(Value::as_str),
+        Some(truncated_output),
+        "the immediate copy-only result should retain the untrusted output for diagnosis"
+    );
+
+    let request_text = server.join().expect("mock server thread");
+    let request_body = request_text
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .expect("mock request body");
+    let request_json: Value = serde_json::from_str(request_body).expect("mock request json");
+    assert_eq!(
+        request_json.get("max_tokens").and_then(Value::as_u64),
+        Some(8_000),
+        "Task Preflight should keep extra completion headroom beyond its cost estimate"
+    );
+
+    let prompt_runs =
+        fs::read_to_string(host.llm_prompt_runs_path()).expect("task cockpit prompt-run metadata");
+    assert!(!prompt_runs.contains(sensitive_task));
+    assert!(!prompt_runs.contains("incomplete"));
+    let stored_runs: Value = serde_json::from_str(&prompt_runs).expect("prompt-run metadata json");
+    assert_eq!(
+        stored_runs.pointer("/0/task"),
+        Some(&Value::Null),
+        "Task Preflight task text must remain session-only"
+    );
+    assert_eq!(
+        stored_runs.pointer("/0/draft_output"),
+        Some(&Value::Null),
+        "Task Preflight provider output must remain session-only"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn task_cockpit_multi_agent_request_reserves_completion_budget() {
+    const MINIMUM_COMPLETE_OUTPUT_TOKENS: u64 = 8_000;
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-task-cockpit-completion-budget-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let truncated_output = r#"{"summary":{"summary":"incomplete"},"agent_candidates":[],"skill_candidates":[{"reasons":["cut off"#;
+    let complete_output = json!({
+        "summary": {},
+        "agent_candidates": [],
+        "skill_candidates": [],
+        "safety_flags": {}
+    })
+    .to_string();
+    let (base_url, server) = spawn_mock_openai_server_requiring_output_budget(
+        MINIMUM_COMPLETE_OUTPUT_TOKENS,
+        truncated_output,
+        complete_output.clone(),
+    );
+    let host = test_host(app_data_dir.clone());
+    let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
+    seed_catalog_with_llm_skill(&host, &skill_path);
+
+    let save = host.handle(ServiceRequest {
+        id: Some("provider-save".to_string()),
+        method: "llm.saveProviderProfile".to_string(),
+        params: json!({
+            "id": "mock-openai-task-cockpit-budget",
+            "display_name": "Mock OpenAI Task Cockpit Budget",
+            "provider_type": "openai-compatible",
+            "base_url": base_url,
+            "model": "mock-model",
+            "enabled": true,
+            "single_request_token_limit": 12_000,
+            "monthly_budget_usd": 10.0
+        }),
+    });
+    assert!(save.ok, "{:?}", save.error);
+    let _secret_env_guard = EnvVarGuard::set(
+        "SKILLS_COPILOT_TEST_SECRET_PROVIDER_MOCK_OPENAI_TASK_COCKPIT_BUDGET",
+        "test-secret-key",
+    );
+
+    let request = json!({
+        "action": "task_cockpit",
+        "app_language": "en",
+        "agents": ["claude-code", "codex"],
+        "instance_ids": ["llm-skill-id"],
+        "user_intent": "Use a reference image to make a pet package"
+    });
+    let preview = host.handle(ServiceRequest {
+        id: Some("preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: request.clone(),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let preview_result = preview.result.expect("preview result");
+    assert_eq!(
+        preview_result
+            .get("estimated_output_tokens")
+            .and_then(Value::as_u64),
+        Some(4_096),
+        "Task Preflight cost estimation should stay compact even when transport headroom is larger"
+    );
+    let preview_id = preview_result
+        .get("preview_id")
+        .and_then(Value::as_str)
+        .expect("preview id")
+        .to_string();
+
+    let confirm = host.handle(ServiceRequest {
+        id: Some("confirm".to_string()),
+        method: "llm.confirmPromptAndSend".to_string(),
+        params: json!({
+            "preview_id": preview_id,
+            "confirmation_id": "confirm-task-cockpit-completion-budget",
+            "request": request,
+            "timeout_ms": 2_000
+        }),
+    });
+    assert!(confirm.ok, "{:?}", confirm.error);
+    let result = confirm.result.expect("confirm result");
+    let request_text = server.join().expect("mock server thread");
+    let request_body = request_text
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .expect("mock request body");
+    let request_json: Value = serde_json::from_str(request_body).expect("mock request json");
+
+    assert_eq!(
+        result.get("status").and_then(Value::as_str),
+        Some("succeeded"),
+        "a two-Agent Task Preflight should receive enough output budget for complete JSON"
+    );
+    assert_eq!(
+        result.get("draft_output").and_then(Value::as_str),
+        Some(complete_output.as_str())
+    );
+    assert!(
+        request_json
+            .get("max_tokens")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value >= MINIMUM_COMPLETE_OUTPUT_TOKENS),
+        "the provider request must allow Task Preflight to finish after its estimated output budget"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn task_cockpit_prompt_bounds_structured_output() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-task-cockpit-output-bounds-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let skill_path = app_data_dir.join("fixture-skill").join("SKILL.md");
+    seed_catalog_with_llm_skill(&host, &skill_path);
+
+    let preview = host.handle(ServiceRequest {
+        id: Some("preview".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: json!({
+            "action": "task_cockpit",
+            "app_language": "en",
+            "agents": ["claude-code", "codex"],
+            "instance_ids": ["llm-skill-id"],
+            "user_intent": "Use a reference image to make a pet package"
+        }),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let prompt = preview
+        .result
+        .as_ref()
+        .and_then(|result| result.get("prompt_preview"))
+        .and_then(Value::as_str)
+        .expect("Task Preflight prompt preview");
+
+    for expected in [
+        r#""agent_candidates": 3"#,
+        r#""skill_candidates": 3"#,
+        r#""reasons_per_candidate": 2"#,
+        r#""readiness_signals": 4"#,
+        r#""gap_rows": 3"#,
+        r#""blocker_rows": 3"#,
+        r#""prose_chars_per_value": 160"#,
+        "Return compact JSON",
+    ] {
+        assert!(
+            prompt.contains(expected),
+            "Task Preflight prompt must bound provider output with `{expected}`"
+        );
+    }
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn task_cockpit_prompt_includes_every_selected_effective_skill() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-task-cockpit-complete-skills-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    fs::create_dir_all(&host.app_data_dir).expect("create app data");
+    let catalog = Catalog::open(&host.catalog_path()).expect("open catalog");
+    catalog.init().expect("init catalog");
+
+    let mut instance_ids = Vec::new();
+    for index in 0..31 {
+        let id = format!("complete-skill-{index:02}");
+        instance_ids.push(id.clone());
+        let path = app_data_dir
+            .join("complete-skills")
+            .join(format!("skill-{index:02}"))
+            .join("SKILL.md");
+        catalog
+            .upsert_skill_instance(&SkillInstance {
+                id,
+                agent: AgentId::ClaudeCode,
+                scope: Scope::AgentGlobal,
+                project_root: None,
+                path: path.clone(),
+                display_path: path,
+                definition_id: format!("complete-definition-{index:02}"),
+                name: format!("complete-skill-{index:02}"),
+                display_name: format!("Complete Skill {index:02}"),
+                description: format!("FULL_SKILL_DESCRIPTION_{index:02}"),
+                version: None,
+                state: SkillState::Loaded,
+                enabled: true,
+                frontmatter_raw: String::new(),
+                body: String::new(),
+                scripts: Vec::new(),
+                permissions: PermissionRequest::default(),
+                fingerprint: format!("complete-fingerprint-{index:02}"),
+                mtime: index,
+                first_seen: 1,
+                last_seen: 1,
+            })
+            .expect("upsert complete skill fixture");
+    }
+    drop(catalog);
+
+    let preview = host.handle(ServiceRequest {
+        id: Some("preview-complete-skills".to_string()),
+        method: "llm.previewPrompt".to_string(),
+        params: json!({
+            "action": "task_cockpit",
+            "app_language": "zh-Hans",
+            "agents": ["claude-code"],
+            "instance_ids": instance_ids,
+            "user_intent": "使用参考图制作写实风格宠物包"
+        }),
+    });
+    assert!(preview.ok, "{:?}", preview.error);
+    let prompt = preview
+        .result
+        .as_ref()
+        .and_then(|result| result.get("prompt_preview"))
+        .and_then(Value::as_str)
+        .expect("Task Preflight prompt preview");
+
+    for index in 0..31 {
+        let marker = format!("FULL_SKILL_DESCRIPTION_{index:02}");
+        assert!(
+            prompt.contains(&marker),
+            "Task Preflight silently omitted selected skill marker {marker}"
+        );
+    }
+    for expected in [
+        r#""eligible_skill_count": 31"#,
+        r#""included_skill_count": 31"#,
+        r#""omitted_skill_count": 0"#,
+        r#""active_skill_count": 31"#,
+    ] {
+        assert!(
+            prompt.contains(expected),
+            "Task Preflight must report a complete skill inventory with {expected}"
+        );
+    }
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
+fn legacy_task_cockpit_prompt_content_is_scrubbed_without_touching_other_drafts() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-task-cockpit-prompt-scrub-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let redaction_summary = LlmPromptRunRedactionSummary {
+        status: "redacted-local-only".to_string(),
+        redacted_value_count: 0,
+        redacted_fields: Vec::new(),
+        placeholders: Vec::new(),
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+        raw_trace_persisted: false,
+        raw_secret_returned: false,
+    };
+    let task_cockpit_run = LlmPromptRunRecord {
+        id: "task-cockpit-run".to_string(),
+        preview_id: "task-cockpit-preview".to_string(),
+        confirmation_id: "task-cockpit-confirm".to_string(),
+        action: "task_cockpit".to_string(),
+        request_kind: "task_cockpit".to_string(),
+        analysis_kind: None,
+        scope: Some("agents".to_string()),
+        instance_id: None,
+        instance_ids: vec!["llm-skill-id".to_string()],
+        definition_id: None,
+        agent: None,
+        task: Some("LEGACY_TASK_COCKPIT_TASK".to_string()),
+        profile_id: "fixture-openai".to_string(),
+        provider: "openai-compatible".to_string(),
+        model: "fixture-model".to_string(),
+        destination_host: "api.fixture.invalid".to_string(),
+        status: "parse_failed".to_string(),
+        error_code: Some("response_schema_invalid".to_string()),
+        error_message: Some("invalid JSON".to_string()),
+        duration_ms: 10,
+        estimated_input_tokens: 100,
+        estimated_output_tokens: 1_400,
+        estimated_total_tokens: 1_500,
+        estimated_cost_usd: 0.01,
+        draft_output: Some("LEGACY_TASK_COCKPIT_OUTPUT".to_string()),
+        draft_requires_user_copy: true,
+        provider_request_sent: true,
+        credential_accessed: true,
+        raw_secret_returned: false,
+        raw_prompt_persisted: false,
+        raw_response_persisted: false,
+        redaction_summary: redaction_summary.clone(),
+        created_at: 20,
+        completed_at: 20,
+        safety_flags: llm_prompt_run_safety_flags(true, true),
+    };
+    let mut analysis_run = task_cockpit_run.clone();
+    analysis_run.id = "analysis-run".to_string();
+    analysis_run.preview_id = "analysis-preview".to_string();
+    analysis_run.confirmation_id = "analysis-confirm".to_string();
+    analysis_run.action = "analyze".to_string();
+    analysis_run.request_kind = "analyze".to_string();
+    analysis_run.task = Some("ANALYSIS_TASK".to_string());
+    analysis_run.draft_output = Some("ANALYSIS_DRAFT".to_string());
+    analysis_run.error_code = None;
+    analysis_run.error_message = None;
+    analysis_run.status = "succeeded".to_string();
+    analysis_run.redaction_summary = redaction_summary;
+    analysis_run.created_at = 10;
+    analysis_run.completed_at = 10;
+
+    host.save_llm_prompt_runs(&[task_cockpit_run.clone(), analysis_run])
+        .expect("save legacy prompt runs");
+    let prompt_runs_path = host.llm_prompt_runs_path();
+    let mut raw_runs: Value = serde_json::from_str(
+        &fs::read_to_string(&prompt_runs_path).expect("read legacy prompt runs"),
+    )
+    .expect("legacy prompt runs json");
+    let raw_task_cockpit = raw_runs
+        .as_array_mut()
+        .and_then(|runs| {
+            runs.iter_mut().find(|run| {
+                run.get("id").and_then(Value::as_str) == Some(task_cockpit_run.id.as_str())
+            })
+        })
+        .and_then(Value::as_object_mut)
+        .expect("legacy Task Preflight object");
+    raw_task_cockpit.insert(
+        "future_metadata".to_string(),
+        json!({"must_survive_scrub": true}),
+    );
+    fs::write(
+        &prompt_runs_path,
+        serde_json::to_string_pretty(&raw_runs).expect("serialize legacy prompt runs"),
+    )
+    .expect("write legacy prompt runs with future metadata");
+    assert!(host
+        .scrub_persisted_task_cockpit_prompt_content()
+        .expect("scrub legacy Task Preflight content"));
+
+    let runs = host
+        .load_llm_prompt_runs()
+        .expect("load scrubbed prompt runs");
+    let scrubbed = runs
+        .iter()
+        .find(|run| run.id == task_cockpit_run.id)
+        .expect("scrubbed Task Preflight metadata");
+    assert!(scrubbed.task.is_none());
+    assert!(scrubbed.draft_output.is_none());
+    let analysis = runs
+        .iter()
+        .find(|run| run.id == "analysis-run")
+        .expect("preserved analysis run");
+    assert_eq!(analysis.task.as_deref(), Some("ANALYSIS_TASK"));
+    assert_eq!(analysis.draft_output.as_deref(), Some("ANALYSIS_DRAFT"));
+
+    let content = fs::read_to_string(host.llm_prompt_runs_path()).expect("scrubbed prompt file");
+    assert!(!content.contains("LEGACY_TASK_COCKPIT_TASK"));
+    assert!(!content.contains("LEGACY_TASK_COCKPIT_OUTPUT"));
+    assert!(content.contains("ANALYSIS_TASK"));
+    assert!(content.contains("ANALYSIS_DRAFT"));
+    let scrubbed_json: Value = serde_json::from_str(&content).expect("scrubbed prompt json");
+    let preserved_future_metadata = scrubbed_json
+        .as_array()
+        .and_then(|runs| {
+            runs.iter().find(|run| {
+                run.get("id").and_then(Value::as_str) == Some(task_cockpit_run.id.as_str())
+            })
+        })
+        .and_then(|run| run.pointer("/future_metadata/must_survive_scrub"))
+        .and_then(Value::as_bool);
+    assert_eq!(preserved_future_metadata, Some(true));
+    assert!(
+        !host
+            .scrub_persisted_task_cockpit_prompt_content()
+            .expect("repeat scrub"),
+        "the startup scrub should be idempotent"
+    );
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 fn llm_preview_prompt_returns_redacted_confirmation_payload() {
     let app_data_dir = env::temp_dir().join(format!(
         "skills-copilot-llm-preview-test-{}-{}",

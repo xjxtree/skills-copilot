@@ -994,6 +994,7 @@ test("repository manifest inventories every planned formal list", () => {
     "task-cockpit.sections",
     "task-cockpit.skills",
     "task-cockpit.tasks",
+    "task-preflight.history",
   ];
   const repositoryManifest = loadListCompletenessManifest();
   assert.deepEqual(

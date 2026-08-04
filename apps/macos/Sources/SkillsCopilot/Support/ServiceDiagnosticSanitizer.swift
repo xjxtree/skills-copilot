@@ -50,7 +50,13 @@ enum ServiceDiagnosticSanitizer {
                 "The service exited without a safe diagnostic."
             )
         }
-        return String(collapsed.prefix(maximumDisplayCharacters))
+        guard collapsed.count > maximumDisplayCharacters else { return collapsed }
+        let marker = UIStrings.text(
+            "service.error.diagnosticTruncated",
+            " … [diagnostic truncated]"
+        )
+        let retainedCount = max(0, maximumDisplayCharacters - marker.count)
+        return String(collapsed.prefix(retainedCount)) + marker
     }
 
     private static func redactingCredentialAssignments(in value: String) -> String {

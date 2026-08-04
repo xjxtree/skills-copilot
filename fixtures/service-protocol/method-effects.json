@@ -35,6 +35,7 @@
     "skillManager.listTools": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "skillManager.search": { "writes": ["external_manager_state"], "process": "conditional", "network": "conditional", "confirmation": "none" },
     "skillManager.listInstalled": { "writes": ["external_manager_state"], "process": "always", "network": "never", "confirmation": "none" },
+    "skillManager.inspectLocalSource": { "writes": ["external_manager_state"], "process": "always", "network": "never", "confirmation": "none" },
     "skillManager.previewInstall": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },
     "skillManager.applyInstall": { "writes": ["app_data", "external_manager_state"], "process": "always", "network": "conditional", "confirmation": "required" },
     "skillManager.previewRemove": { "writes": [], "process": "never", "network": "never", "confirmation": "none" },

@@ -18,6 +18,7 @@ struct ServiceClientProcessTests {
         try await stdoutAboveSixteenMiBReturnsResponseTooLarge()
         try await oversizedFailingStderrIsBoundedAndRedacted()
         try diagnosticSanitizerCoversStandalonePatternsAndFallback()
+        try diagnosticSanitizerMarksOmittedContent()
         try diagnosticSanitizerRedactsAdjacentCredentialAssignments()
         try diagnosticSanitizerKeepsLineBoundaryAfterEscapedUnterminatedQuote()
         try diagnosticSanitizerRedactsEscapedOuterQuotedValues()
@@ -229,6 +230,16 @@ struct ServiceClientProcessTests {
         try expectFalse(
             ServiceDiagnosticSanitizer.displayMessage(" \n\t ").isEmpty,
             "Empty diagnostics should use a stable fallback."
+        )
+    }
+
+    private func diagnosticSanitizerMarksOmittedContent() throws {
+        let output = ServiceDiagnosticSanitizer.displayMessage(String(repeating: "safe diagnostic ", count: 100))
+        try expectFalse(output.count > ServiceDiagnosticSanitizer.maximumDisplayCharacters, "Marked diagnostics must remain within the display ceiling.")
+        try expectContains(
+            output,
+            UIStrings.text("service.error.diagnosticTruncated", " … [diagnostic truncated]").trimmingCharacters(in: .whitespaces),
+            "A shortened diagnostic must explicitly say that content was omitted."
         )
     }
 

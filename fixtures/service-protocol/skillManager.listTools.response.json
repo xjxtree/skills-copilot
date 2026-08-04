@@ -10,6 +10,7 @@
       "operations": [
         "search",
         "listInstalled",
+        "inspectLocalSource",
         "previewInstall",
         "applyInstall",
         "previewRemove",
@@ -34,7 +35,8 @@
       ],
       "notes": [
         "Network-backed search/install/update run only after explicit app confirmation.",
-        "The native Skill Manager uses symlink distribution."
+        "The native Skill Manager uses symlink distribution.",
+        "Local folders are inspected without installation and remain in place."
       ]
     },
     {

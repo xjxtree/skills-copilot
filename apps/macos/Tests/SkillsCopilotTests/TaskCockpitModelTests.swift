@@ -18,6 +18,54 @@ struct TaskCockpitModelTests {
         try duplicateExternalSummaryIDsKeepEveryDisplayOccurrence()
         try signalClassificationHasSingleProductionContract()
         try buildsActionableRecommendationAndHandoff()
+        try historyDefaultsToOneWeekAndFiltersWithoutDiscardingRecords()
+        try recognizesProviderOutputTruncation()
+    }
+
+    private func historyDefaultsToOneWeekAndFiltersWithoutDiscardingRecords() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let start = TaskCockpitHistoryPresentation.defaultStartDate(now: now, calendar: calendar)
+        try expectEqual(
+            calendar.dateComponents([.day], from: start, to: calendar.startOfDay(for: now)).day,
+            6,
+            "History should default to the current day plus the previous six calendar days."
+        )
+
+        let recent = TaskCockpitHistoryRecord(
+            taskText: "recent",
+            result: .unavailable(taskText: "recent", reason: "fixture"),
+            operationState: .idle,
+            createdAt: calendar.date(byAdding: .day, value: -2, to: now)!
+        )
+        let old = TaskCockpitHistoryRecord(
+            taskText: "old",
+            result: .unavailable(taskText: "old", reason: "fixture"),
+            operationState: .idle,
+            createdAt: calendar.date(byAdding: .day, value: -20, to: now)!
+        )
+        let filtered = TaskCockpitHistoryPresentation.filteredRecords(
+            [recent, old],
+            startDate: start,
+            endDate: now,
+            calendar: calendar
+        )
+        try expectEqual(filtered.map(\.displayTask), ["recent"], "Date filtering should change only visible history, not the retained in-memory records.")
+        try expectEqual(TaskCockpitHistoryPresentation.pageSize, 12, "History should expose records in explicit twelve-row UI pages.")
+    }
+
+    private func recognizesProviderOutputTruncation() throws {
+        let result = TaskCockpitResult.unavailable(
+            taskText: "Prepare a pet package",
+            reason: "response_truncated: Provider stopped Task Preflight output at the configured output-token limit before the JSON result was complete."
+        )
+
+        try expectEqual(
+            result.isProviderOutputTruncated,
+            true,
+            "Token-limit failures should select retry/model guidance instead of catalog refresh guidance."
+        )
     }
 
     private struct ServiceEnvelope<ResultPayload: Decodable>: Decodable {
@@ -321,6 +369,11 @@ struct TaskCockpitModelTests {
 
         let decision = TaskCockpitDecisionModel(result: result)
         try expectFalse(!decision.keyReasons.contains("Candidate reason 4"), "Production decision reasons must retain the final candidate reason.")
+        let handoff = TaskCockpitHandoffModel.text(taskText: "Complete handoff", result: result)
+        try expectFalse(
+            !handoff.contains("Candidate reason 4"),
+            "Handoff text must retain every review reason instead of silently keeping only three."
+        )
         try expectEqual(decision.candidateAlternatives.count, 5, "Production candidate alternatives must keep every unique candidate.")
         try expectFalse(!decision.candidateAlternatives.last!.contains("Candidate 4"), "Production candidate alternatives must retain the final candidate.")
 

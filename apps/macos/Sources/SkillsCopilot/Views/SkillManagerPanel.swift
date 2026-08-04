@@ -50,6 +50,12 @@ private enum SkillManagerInventorySort: String, CaseIterable, Identifiable {
     }
 }
 
+private enum SkillManagerFileImporterPurpose {
+    case localSource
+    case archiveImport
+    case archiveUpdate
+}
+
 struct SkillManagerPanel: View {
     @EnvironmentObject private var store: SkillStore
     @EnvironmentObject private var skillManagerStore: SkillManagerStore
@@ -61,8 +67,8 @@ struct SkillManagerPanel: View {
     @State private var actionScope: SkillManagerScope = .project
     @State private var actionAgentIDs = Set(SkillManagerAgent.defaultTargets.map(\.rawValue))
     @State private var pendingConfirmation: SkillManagerWriteConfirmation?
-    @State private var isChoosingArchive = false
-    @State private var isChoosingImportArchive = false
+    @State private var isChoosingFile = false
+    @State private var fileImporterPurpose: SkillManagerFileImporterPurpose = .localSource
     @State private var isArchiveDropTarget = false
     @State private var inventoryQuery = ""
     @State private var inventorySourceFilter: SkillManagerInventorySourceFilter = .all
@@ -104,16 +110,10 @@ struct SkillManagerPanel: View {
             }
         }
         .fileImporter(
-            isPresented: $isChoosingArchive,
-            allowedContentTypes: [.zip],
+            isPresented: $isChoosingFile,
+            allowedContentTypes: fileImporterPurpose == .localSource ? [.folder] : [.zip],
             allowsMultipleSelection: false,
-            onCompletion: handleArchiveSelection
-        )
-        .fileImporter(
-            isPresented: $isChoosingImportArchive,
-            allowedContentTypes: [.zip],
-            allowsMultipleSelection: false,
-            onCompletion: handleImportArchiveSelection
+            onCompletion: handleFileImporterSelection
         )
         .alert(confirmationTitle, isPresented: confirmationBinding) {
             if let confirmation = pendingConfirmation {
@@ -301,20 +301,108 @@ struct SkillManagerPanel: View {
             HStack(alignment: .center, spacing: 12) {
                 VStack(alignment: .leading, spacing: 3) {
                     Label(
-                        UIStrings.text("skillManager.localImport.title", "Local Package"),
-                        systemImage: "doc.zipper"
+                        UIStrings.text("skillManager.localSource.title", "Install from Folder"),
+                        systemImage: "folder.badge.plus"
                     )
                     .font(.subheadline.bold())
                     Text(UIStrings.text(
-                        "skillManager.localImport.help",
-                        "Drag or choose a single-skill ZIP. It is validated before you choose install scope and agents."
+                        "skillManager.localSource.help",
+                        "Choose a folder containing one or more SKILL.md files. The source stays in place and npx skills installs links only after preview and confirmation."
                     ))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button {
-                    isChoosingImportArchive = true
+                    fileImporterPurpose = .localSource
+                    isChoosingFile = true
+                } label: {
+                    if skillManagerStore.isInspectingSkillManagerLocalSource {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Label(
+                            UIStrings.text("skillManager.localSource.choose", "Choose Skill Folder"),
+                            systemImage: "plus"
+                        )
+                    }
+                }
+                .disabled(
+                    externalMutationDisabled
+                        || skillManagerStore.isInspectingSkillManagerLocalSource
+                )
+                .accessibilityIdentifier("skill-manager.local-source.choose")
+            }
+            .padding(10)
+            .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 9))
+            .overlay(
+                RoundedRectangle(cornerRadius: 9)
+                    .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+            )
+
+            if let localSource = skillManagerStore.skillManagerDirectLocalSource {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(String(
+                            format: UIStrings.text(
+                                "skillManager.localSource.found",
+                                "%d skills found"
+                            ),
+                            localSource.candidates.count
+                        ))
+                        .font(.caption.bold())
+                        Spacer()
+                        Text(DisplayText.privacyPath(
+                            localSource.displayPath,
+                            privacyModeEnabled: privacyModeEnabled
+                        ))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .help(DisplayText.privacyPath(
+                                localSource.displayPath,
+                                privacyModeEnabled: privacyModeEnabled
+                            ))
+                    }
+                    LazyVStack(spacing: 8) {
+                        ForEach(localSource.candidates) { candidate in
+                            SkillManagerSelectableRow(
+                                title: candidate.name,
+                                subtitle: localSourceCandidateSubtitle(candidate),
+                                badge: UIStrings.text(
+                                    "skillManager.localSource.badge",
+                                    "Direct Install"
+                                ),
+                                isSelected: selectedSkill == .localSource(candidate)
+                            ) {
+                                selectedSkill = .localSource(candidate)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 2)
+                .accessibilityIdentifier("skill-manager.local-source.results")
+            }
+
+            HStack(alignment: .center, spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Label(
+                        UIStrings.text("skillManager.localImport.title", "Import ZIP Snapshot"),
+                        systemImage: "doc.zipper"
+                    )
+                    .font(.subheadline.bold())
+                    Text(UIStrings.text(
+                        "skillManager.localImport.help",
+                        "Drag or choose a single-skill ZIP. The app validates it and stores a managed copy before you choose installation targets."
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    fileImporterPurpose = .archiveImport
+                    isChoosingFile = true
                 } label: {
                     Label(
                         UIStrings.text("skillManager.localImport.choose", "Choose Local ZIP"),
@@ -602,7 +690,7 @@ struct SkillManagerPanel: View {
                     Text(String(
                         format: UIStrings.text(
                             "skillManager.remove.partialBlocked",
-                            "No exact physical install target is available for: %@. Refresh the inventory or use complete uninstall."
+                            "No independently removable link or copy is available for: %@. Refresh the inventory, choose only separable agents, or use complete uninstall."
                         ),
                         missingTargets.map(DisplayText.agent).joined(separator: ", ")
                     ))
@@ -727,7 +815,8 @@ struct SkillManagerPanel: View {
         case .update:
             if selection.isLocal {
                 Button {
-                    isChoosingArchive = true
+                    fileImporterPurpose = .archiveUpdate
+                    isChoosingFile = true
                 } label: {
                     Label(UIStrings.text("skillManager.chooseZip", "Choose ZIP & Preview"), systemImage: "doc.zipper")
                 }
@@ -879,12 +968,20 @@ struct SkillManagerPanel: View {
 
     private func commandOutput(_ output: SkillManagerCommandOutput) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            if !output.stdout.isEmpty { Text(output.stdout) }
-            if !output.stderr.isEmpty { Text(output.stderr).foregroundStyle(.orange) }
+            if !output.stdout.isEmpty {
+                LongTextPreviewCard(
+                    title: UIStrings.text("skillManager.output.stdout", "Standard output"),
+                    text: output.stdout
+                )
+            }
+            if !output.stderr.isEmpty {
+                LongTextPreviewCard(
+                    title: UIStrings.text("skillManager.output.stderr", "Standard error"),
+                    text: output.stderr,
+                    tint: .orange
+                )
+            }
         }
-        .font(.system(.caption, design: .monospaced))
-        .lineLimit(6)
-        .textSelection(.enabled)
     }
 
     private func configureAction(for selection: SkillManagerSelection?) {
@@ -898,7 +995,7 @@ struct SkillManagerPanel: View {
 
     private func availableActions(for selection: SkillManagerSelection) -> [SkillManagerAction] {
         switch selection {
-        case .search:
+        case .search, .localSource:
             return [.install]
         case .inventory(let item):
             if item.agents.isEmpty {
@@ -923,6 +1020,46 @@ struct SkillManagerPanel: View {
         !skillManagerStore.skillManagerSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !skillManagerStore.isSearchingSkillManager
             && !externalMutationDisabled
+    }
+
+    private func localSourceCandidateSubtitle(
+        _ candidate: SkillManagerDirectLocalSourceCandidate
+    ) -> String {
+        let description = candidate.description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return description.isEmpty ? candidate.relativePath : "\(description) · \(candidate.relativePath)"
+    }
+
+    private func handleFileImporterSelection(_ result: Result<[URL], Error>) {
+        switch fileImporterPurpose {
+        case .localSource:
+            handleLocalSourceSelection(result)
+        case .archiveImport:
+            handleImportArchiveSelection(result)
+        case .archiveUpdate:
+            handleArchiveSelection(result)
+        }
+    }
+
+    private func handleLocalSourceSelection(_ result: Result<[URL], Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            Task {
+                let didAccess = url.startAccessingSecurityScopedResource()
+                defer { if didAccess { url.stopAccessingSecurityScopedResource() } }
+                await store.inspectSkillManagerLocalSource(sourcePath: url.path)
+
+                guard let localSource = skillManagerStore.skillManagerDirectLocalSource,
+                      localSource.sourcePath == url.path else {
+                    if case .localSource = selectedSkill { selectedSkill = nil }
+                    return
+                }
+                selectedSkill = localSource.candidates.count == 1
+                    ? localSource.candidates.first.map(SkillManagerSelection.localSource)
+                    : nil
+            }
+        } catch {
+            // Folder picker cancellation needs no banner; service inspection reports validation errors.
+        }
     }
 
     private func handleArchiveSelection(_ result: Result<[URL], Error>) {
@@ -1060,11 +1197,13 @@ struct SkillManagerPanel: View {
 
 private enum SkillManagerSelection: Hashable {
     case search(SkillManagerSearchResult)
+    case localSource(SkillManagerDirectLocalSourceCandidate)
     case inventory(SkillManagerInventoryItem)
 
     var name: String {
         switch self {
         case .search(let value): return value.name
+        case .localSource(let value): return value.name
         case .inventory(let value): return value.name
         }
     }
@@ -1072,6 +1211,7 @@ private enum SkillManagerSelection: Hashable {
     var source: String {
         switch self {
         case .search(let value): return value.source ?? value.name
+        case .localSource(let value): return value.sourcePath
         case .inventory(let value): return value.localPath ?? value.source ?? value.name
         }
     }
@@ -1079,20 +1219,24 @@ private enum SkillManagerSelection: Hashable {
     var detail: String {
         switch self {
         case .search(let value): return value.description ?? value.source ?? value.name
+        case .localSource(let value):
+            let description = value.description.trimmingCharacters(in: .whitespacesAndNewlines)
+            let location = "\(value.displayPath) · \(value.relativePath)"
+            return description.isEmpty ? location : "\(description)\n\(location)"
         case .inventory(let value): return value.source ?? value.localPath ?? value.scope.title
         }
     }
 
     var scope: SkillManagerScope {
         switch self {
-        case .search: return .project
+        case .search, .localSource: return .project
         case .inventory(let value): return value.scope
         }
     }
 
     var agents: [String] {
         switch self {
-        case .search: return []
+        case .search, .localSource: return []
         case .inventory(let value): return value.agents
         }
     }

@@ -63,6 +63,9 @@ private struct TaskPreflightEditorPane: View {
             isPreviewingPrompt: displayedIsPreviewingPrompt,
             result: displayedResult,
             failedProviderOutput: isDraftSyncedWithStore ? store.taskCockpitFailedProviderOutput : nil,
+            historyDetail: isDraftSyncedWithStore
+                ? store.taskCockpitHistory.first(where: { $0.id == store.selectedTaskCockpitHistoryID })
+                : nil,
             isBuilding: displayedIsBuilding,
             operationState: displayedOperationState,
             providerGateMessage: providerGateMessage,
@@ -179,11 +182,45 @@ private struct TaskPreflightEditorPane: View {
 
 private struct TaskPreflightHistoryPanel: View {
     @State private var isConfirmingClear = false
+    @State private var startDate = TaskCockpitHistoryPresentation.defaultStartDate()
+    @State private var endDate = Date()
+    @State private var visibleCount = TaskCockpitHistoryPresentation.pageSize
     let records: [TaskCockpitHistoryRecord]
     let selectedID: TaskCockpitHistoryRecord.ID?
     let cleanupMessage: String?
     let onSelect: (TaskCockpitHistoryRecord) -> Void
     let onClear: () -> Void
+
+    private var filteredRecords: [TaskCockpitHistoryRecord] {
+        TaskCockpitHistoryPresentation.filteredRecords(
+            records,
+            startDate: startDate,
+            endDate: endDate
+        )
+    }
+
+    private var visibleRecords: [TaskCockpitHistoryRecord] {
+        let endIndex = filteredRecords.index(
+            filteredRecords.startIndex,
+            offsetBy: min(visibleCount, filteredRecords.count)
+        )
+        return Array(filteredRecords[..<endIndex])
+    }
+
+    private var historyCompleteness: ListCompletenessState {
+        let hasMore = visibleRecords.count < filteredRecords.count
+        return ListCompletenessState(
+            loadedCount: visibleRecords.count,
+            totalCount: filteredRecords.count,
+            hasMore: hasMore,
+            isComplete: !hasMore,
+            completeness: hasMore ? .partial : .complete,
+            incompleteReason: nil,
+            loadingPhase: .idle,
+            canLoadMore: hasMore,
+            canLoadAll: hasMore
+        )
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -208,11 +245,25 @@ private struct TaskPreflightHistoryPanel: View {
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            HStack(spacing: 8) {
+                DatePicker(
+                    UIStrings.text("taskCockpit.history.startDate", "From"),
+                    selection: $startDate,
+                    displayedComponents: .date
+                )
+                DatePicker(
+                    UIStrings.text("taskCockpit.history.endDate", "To"),
+                    selection: $endDate,
+                    displayedComponents: .date
+                )
+            }
+            .controlSize(.small)
+
             if let cleanupMessage {
                 WorkflowSheetInlineBanner(message: cleanupMessage, style: .warning)
             }
 
-            if records.isEmpty {
+            if filteredRecords.isEmpty {
                 EmptyState(
                     title: UIStrings.text("taskCockpit.history.emptyTitle", "No History"),
                     systemImage: "clock.badge.questionmark",
@@ -221,7 +272,7 @@ private struct TaskPreflightHistoryPanel: View {
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(records) { record in
+                        ForEach(visibleRecords) { record in
                             TaskPreflightHistoryRow(
                                 record: record,
                                 isSelected: record.id == selectedID,
@@ -229,6 +280,24 @@ private struct TaskPreflightHistoryPanel: View {
                                     onSelect(record)
                                 }
                             )
+                        }
+
+                        if historyCompleteness.hasMore {
+                            ListCompletenessFooter(
+                                state: historyCompleteness,
+                                onLoadMore: {
+                                    visibleCount = min(
+                                        filteredRecords.count,
+                                        visibleCount + TaskCockpitHistoryPresentation.pageSize
+                                    )
+                                },
+                                onLoadAll: {
+                                    visibleCount = filteredRecords.count
+                                },
+                                onCancel: {},
+                                accessibilityIdentifierPrefix: "task-cockpit-history"
+                            )
+                            .accessibilityIdentifier("task-cockpit-history.completeness")
                         }
                     }
                 }
@@ -251,6 +320,12 @@ private struct TaskPreflightHistoryPanel: View {
         } message: {
             Text(UIStrings.taskCockpitHistoryClearConfirmationMessage)
         }
+        .onChange(of: startDate) { _ in
+            visibleCount = TaskCockpitHistoryPresentation.pageSize
+        }
+        .onChange(of: endDate) { _ in
+            visibleCount = TaskCockpitHistoryPresentation.pageSize
+        }
     }
 }
 
@@ -261,6 +336,21 @@ private struct TaskPreflightHistoryRow: View {
 
     private var model: TaskCockpitDecisionPresentationModel {
         TaskCockpitDecisionPresentationModel(result: record.result)
+    }
+
+    private var completeInformationLabel: String? {
+        let hasRequest = record.promptPreview?.promptPreview?.isEmpty == false
+        let hasResponse = record.providerOutput?.isEmpty == false
+        switch (hasRequest, hasResponse) {
+        case (true, true):
+            return UIStrings.text("taskCockpit.history.fullInformation", "Complete request and response available")
+        case (true, false):
+            return UIStrings.text("taskCockpit.history.fullRequestOnly", "Complete request available; no provider response returned")
+        case (false, true):
+            return UIStrings.text("taskCockpit.history.fullResponseOnly", "Complete provider response available")
+        case (false, false):
+            return nil
+        }
     }
 
     var body: some View {
@@ -284,6 +374,16 @@ private struct TaskPreflightHistoryRow: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+
+                if let completeInformationLabel {
+                    Label(
+                        completeInformationLabel,
+                        systemImage: "doc.text.magnifyingglass"
+                    )
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                }
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text(model.verdict.title)
@@ -333,6 +433,7 @@ struct TaskCockpitPanel: View {
     let isPreviewingPrompt: Bool
     let result: TaskCockpitResult?
     let failedProviderOutput: String?
+    let historyDetail: TaskCockpitHistoryRecord?
     let isBuilding: Bool
     let operationState: TaskCockpitOperationState
     let providerGateMessage: String?
@@ -411,6 +512,11 @@ struct TaskCockpitPanel: View {
                     isBuilding: isBuilding,
                     onOpenRecommendation: onOpenRecommendation
                 )
+                if let historyDetail,
+                   historyDetail.promptPreview?.promptPreview?.isEmpty == false
+                    || historyDetail.providerOutput?.isEmpty == false {
+                    TaskCockpitHistoryFullInformation(record: historyDetail)
+                }
                 if let failedProviderOutput {
                     TaskCockpitFailedProviderOutputButton(text: failedProviderOutput)
                 }
@@ -496,9 +602,29 @@ private struct TaskCockpitPromptPreviewCard: View {
                     systemImage: "paperplane"
                 )
                 promptFact(
-                    title: UIStrings.text("llm.prompt.tokens", "Tokens"),
+                    title: UIStrings.text("taskCockpit.promptPreview.skillCount", "Skills sent"),
+                    value: "\(confirmation.instanceIDs.count)",
+                    systemImage: "square.stack.3d.up"
+                )
+                promptFact(
+                    title: UIStrings.text("taskCockpit.promptPreview.inputTokens", "Input tokens"),
+                    value: preview.estimate.map { "\($0.inputTokens)" } ?? UIStrings.unknown,
+                    systemImage: "arrow.right.to.line"
+                )
+                promptFact(
+                    title: UIStrings.text("taskCockpit.promptPreview.outputTokens", "Output tokens"),
+                    value: preview.estimate.map { "\($0.outputTokens)" } ?? UIStrings.unknown,
+                    systemImage: "arrow.left.to.line"
+                )
+                promptFact(
+                    title: UIStrings.taskCockpitPromptEstimatedTokens,
                     value: preview.estimate.map { "\($0.totalTokens)" } ?? UIStrings.unknown,
                     systemImage: "sum"
+                )
+                promptFact(
+                    title: UIStrings.text("taskCockpit.promptPreview.estimatedCost", "Estimated cost"),
+                    value: preview.estimate?.estimatedCostUSD.map { String(format: "$%.4f", $0) } ?? UIStrings.unknown,
+                    systemImage: "dollarsign.circle"
                 )
             }
 
@@ -507,16 +633,6 @@ private struct TaskCockpitPromptPreviewCard: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-            }
-
-            if let prompt = preview.promptPreview, !prompt.isEmpty {
-                Text(prompt)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .lineLimit(5)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.agentCopilotWindowBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 6))
             }
 
             HStack {
@@ -1121,6 +1237,41 @@ private struct TaskCockpitResultView: View {
     }
 }
 
+private struct TaskCockpitHistoryFullInformation: View {
+    let record: TaskCockpitHistoryRecord
+    @State private var isExpanded = false
+
+    var body: some View {
+        DisclosureGroup(isExpanded: $isExpanded) {
+            VStack(alignment: .leading, spacing: 10) {
+                if let request = record.promptPreview?.promptPreview, !request.isEmpty {
+                    LongTextPreviewCard(
+                        title: UIStrings.text("taskCockpit.history.completeRequest", "Complete redacted request"),
+                        text: request
+                    )
+                }
+                if let response = record.providerOutput, !response.isEmpty {
+                    LongTextPreviewCard(
+                        title: UIStrings.text("taskCockpit.history.completeResponse", "Complete provider response"),
+                        text: response,
+                        tint: .orange
+                    )
+                }
+            }
+            .padding(.top, 8)
+        } label: {
+            Label(
+                UIStrings.text("taskCockpit.history.fullInformation", "Complete request and response available"),
+                systemImage: "doc.text.magnifyingglass"
+            )
+            .font(.caption.bold())
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.agentCopilotPanelBackground, in: RoundedRectangle(cornerRadius: 6))
+    }
+}
+
 private enum TaskCockpitVerdict {
     case ready
     case needsReview
@@ -1296,7 +1447,9 @@ private struct TaskCockpitDecisionPresentationModel {
         case .blocked:
             return UIStrings.taskCockpitNextStepBlocked
         case .unavailable:
-            return UIStrings.taskCockpitNextStepUnavailable
+            return result.isProviderOutputTruncated
+                ? UIStrings.taskCockpitNextStepProviderTruncated
+                : UIStrings.taskCockpitNextStepUnavailable
         }
     }
 

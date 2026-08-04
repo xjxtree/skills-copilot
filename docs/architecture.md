@@ -82,6 +82,9 @@ entire UI.
 - Local-session summaries and selected details use bounded, source-scoped,
   progressively paged reads. They remain in memory and are not persisted by
   the native shell.
+- Native service diagnostics are redacted and collapsed for display. Values
+  longer than the 512-character display boundary end with an explicit localized
+  truncation marker so a shortened diagnostic is never presented as complete.
 - UI filters, sorting, scope changes, and navigation project startup or
   manual-refresh caches. Rust includes a bounded `watch_plan` in the state
   snapshot from existing adapter roots, same-scope link targets, exact config
@@ -139,8 +142,12 @@ Skill Manager follows a skill-first cache model. Startup and explicit manual
 refresh load project/global package inventories; opening the panel and changing
 its display scope or action targets perform no scan. Rust parses full bounded
 manager JSON into compact skill rows and owns local archive validation and
-replacement. Swift renders cached rows and sends typed, confirmation-bound
-actions only after a skill is selected. Manager CLI rows are the primary
+replacement. Rust also validates bounded local source directories, asks the
+manager to enumerate them without installing, and binds their content revision
+to later install confirmation. Swift renders cached rows, presents direct
+folder installation separately from app-owned ZIP snapshot import, and sends
+typed, confirmation-bound actions only after a skill is selected. Manager CLI
+rows are the primary
 installed-package identity; matching catalog instances enrich and are consumed
 by that row. Only guarded sources beneath the selected shared `.agents/skills`
 root participate in the editable catalog fallback, including nested package
@@ -151,10 +158,14 @@ confirmed Skill Manager write participates in the app-wide mutation gate.
 For a shared `.agents/skills` source, the inventory combines the manager row
 with every physically installed supported Agent target found by the catalog,
 regardless of that instance's enable/disable configuration, and retains every
-exact instance identity for verification. Removing a proper subset is a
-guarded physical uninstall: only a selected Agent's separable skill-directory
-symlink or copied directory may be removed. Apply moves exact preview-bound
-entries outside scanned roots, rescans and verifies the selected entries are
+exact instance identity for verification. The read-only inventory also runs
+preview-equivalent checks over those identities and the documented install
+roots to derive which Agents have an effective separable target: a link or copy
+does not qualify when that Agent also reads the shared source or lacks an exact
+catalog identity. Swift uses that capability set to block impossible partial
+previews before RPC. Removing a proper subset is a guarded physical uninstall:
+only a selected Agent's separable target may be removed. Apply moves exact
+preview-bound entries outside scanned roots, rescans and verifies the entries are
 gone while the shared source and unselected targets remain, then commits the
 removal; verification failure restores the entries. If selected and unselected
 Agents directly read the same `.agents/skills` directory, no separable

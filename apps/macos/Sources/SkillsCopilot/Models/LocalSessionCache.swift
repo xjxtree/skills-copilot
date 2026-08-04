@@ -99,6 +99,7 @@ final class LocalSessionCache {
     private var nextGeneration: UInt64 = 0
     private var summaryGenerations: [LocalSessionSnapshotKey: UInt64] = [:]
     private var detailGenerations: [LocalSessionDetailKey: UInt64] = [:]
+    private var detailSummaryGenerations: [LocalSessionDetailKey: UInt64] = [:]
     private var detailRecency: [LocalSessionDetailKey] = []
 
     func beginSummaryRefresh(for key: LocalSessionSnapshotKey) -> UInt64 {
@@ -163,6 +164,11 @@ final class LocalSessionCache {
         }
         let generation = makeGeneration()
         detailGenerations[key] = generation
+        if let summaryGeneration = successfulSnapshot(for: key.source)?.generation {
+            detailSummaryGenerations[key] = summaryGeneration
+        } else {
+            detailSummaryGenerations.removeValue(forKey: key)
+        }
         let shouldShowInitialLoading: Bool
         switch detailStates[key] {
         case .none, .some(.failed):
@@ -210,6 +216,7 @@ final class LocalSessionCache {
             canLoadMore: false,
             canLoadAll: false
         )
+        reconcileSummaryMetadata(from: row, for: key)
         touchDetail(key)
         trimDetails()
         return true
@@ -226,6 +233,7 @@ final class LocalSessionCache {
               detailStates[key] != nil else { return false }
         detailStates[key] = .loaded(row)
         detailCompleteness[key] = completeness
+        reconcileSummaryMetadata(from: row, for: key)
         touchDetail(key)
         trimDetails()
         return true
@@ -338,6 +346,7 @@ final class LocalSessionCache {
         for detailKey in obsolete {
             detailStates.removeValue(forKey: detailKey)
             detailGenerations.removeValue(forKey: detailKey)
+            detailSummaryGenerations.removeValue(forKey: detailKey)
             detailCompleteness.removeValue(forKey: detailKey)
         }
         detailRecency.removeAll { $0.source != key }
@@ -358,6 +367,7 @@ final class LocalSessionCache {
             detailRecency.removeFirst()
             detailStates.removeValue(forKey: oldest)
             detailGenerations.removeValue(forKey: oldest)
+            detailSummaryGenerations.removeValue(forKey: oldest)
             detailCompleteness.removeValue(forKey: oldest)
         }
     }
@@ -369,11 +379,55 @@ final class LocalSessionCache {
         return (path as NSString).standardizingPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
+    private func reconcileSummaryMetadata(
+        from detail: LocalSessionPreviewRow,
+        for key: LocalSessionDetailKey
+    ) {
+        let state = summaryStates[key.source]
+        let snapshot: LocalSessionSnapshot
+        switch state {
+        case .fresh(let value), .refreshing(let value), .stale(let value, _):
+            snapshot = value
+        case .empty, .loading, .failed, .none:
+            return
+        }
+        guard detailSummaryGenerations[key] == snapshot.generation else { return }
+
+        var rows = snapshot.result.sessionRows
+        guard let index = rows.firstIndex(where: { $0.id == detail.id }) else { return }
+        let previous = rows[index]
+        let replacement = detail.summaryOnly
+        guard previous != replacement else { return }
+        rows[index] = replacement
+        let result = summaryResult(snapshot.result, rows: rows)
+        let reconciled = LocalSessionSnapshot(
+            key: snapshot.key,
+            generation: snapshot.generation,
+            result: result,
+            refreshedAt: snapshot.refreshedAt,
+            isComplete: snapshot.isComplete,
+            nextCursor: snapshot.nextCursor,
+            sourceRevision: snapshot.sourceRevision,
+            sourceCompleteness: snapshot.sourceCompleteness,
+            incompleteReason: snapshot.incompleteReason
+        )
+        switch state {
+        case .fresh:
+            summaryStates[key.source] = .fresh(reconciled)
+        case .refreshing:
+            summaryStates[key.source] = .refreshing(reconciled)
+        case .stale(_, let displayError):
+            summaryStates[key.source] = .stale(reconciled, displayError: displayError)
+        case .empty, .loading, .failed, .none:
+            break
+        }
+    }
+
     private func summaryResult(
         _ result: LocalSessionPreviewResult,
         rows: [LocalSessionPreviewRow]
     ) -> LocalSessionPreviewResult {
-        LocalSessionPreviewResult(
+        return LocalSessionPreviewResult(
             generatedBy: result.generatedBy,
             authorized: result.authorized,
             authorizationRequired: result.authorizationRequired,

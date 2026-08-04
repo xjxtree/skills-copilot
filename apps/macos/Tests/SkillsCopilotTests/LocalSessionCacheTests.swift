@@ -13,6 +13,8 @@ struct LocalSessionCacheTests {
         try refreshingKeepsPreviousSummariesVisible()
         try failedRefreshWithDataBecomesStale()
         try failedDetailDoesNotChangeSummaryList()
+        try renamedDetailRefreshesSummaryMetadataForEverySupportedAgent()
+        try detailStartedBeforeNewerSummaryCannotRollBackRenamedMetadata()
         try progressiveDetailRetainsAcceptedMessagesOnCancelAndRetry()
         try detailCacheIsBoundedAndSourceScoped()
         try oldSummaryAndDetailGenerationsAreIgnored()
@@ -160,6 +162,82 @@ struct LocalSessionCacheTests {
             throw NativeModelTestFailure(description: "Detail failure should remain detail-local.")
         }
         try expectEqual(displayError, "detail failed", "Detail failure should retain its display error.")
+    }
+
+    private func renamedDetailRefreshesSummaryMetadataForEverySupportedAgent() throws {
+        for agent in SkillAgentFilter.managementCases {
+            let cache = LocalSessionCache()
+            let source = LocalSessionSnapshotKey(
+                agent: agent.rawValue,
+                projectRoot: "/project",
+                currentCWD: "/project",
+                authorizedRoots: []
+            )
+            publish([row(id: "renamed", title: "Original title")], to: cache, key: source)
+            let key = LocalSessionDetailKey(source: source, sessionID: "renamed")
+            let generation = try required(
+                cache.beginDetailLoad(for: key),
+                "Detail load should begin for \(agent.rawValue)."
+            )
+            let complete = ListCompletenessState(
+                loadedCount: 1,
+                totalCount: 1,
+                hasMore: false,
+                isComplete: true,
+                completeness: .complete,
+                incompleteReason: nil,
+                loadingPhase: .idle,
+                canLoadMore: false,
+                canLoadAll: false
+            )
+            let accepted = cache.publishDetailProgress(
+                row(id: "renamed", title: "Renamed title"),
+                completeness: complete,
+                key: key,
+                generation: generation
+            )
+            let summary = cache.successfulSnapshot(for: source)?.result.sessionRows.first
+
+            try expectEqual(accepted, true, "The current detail generation should publish for \(agent.rawValue).")
+            try expectEqual(summary?.title, "Renamed title", "A renamed detail should update the \(agent.rawValue) summary title.")
+            try expectEqual(summary?.contentIncluded, false, "The reconciled \(agent.rawValue) summary must remain summary-only.")
+            try expectEqual(summary?.contentItems.count, 0, "The reconciled \(agent.rawValue) summary must not retain detail messages.")
+        }
+    }
+
+    private func detailStartedBeforeNewerSummaryCannotRollBackRenamedMetadata() throws {
+        let cache = LocalSessionCache()
+        publish([row(id: "renamed", title: "Original title")], to: cache)
+        let key = LocalSessionDetailKey(source: source, sessionID: "renamed")
+        let detailGeneration = try required(
+            cache.beginDetailLoad(for: key),
+            "The old-title detail load should begin."
+        )
+        publish([row(id: "renamed", title: "Newest list title")], to: cache)
+
+        let accepted = cache.publishDetailProgress(
+            row(id: "renamed", title: "Delayed old detail title"),
+            completeness: ListCompletenessState(
+                loadedCount: 1,
+                totalCount: 1,
+                hasMore: false,
+                isComplete: true,
+                completeness: .complete,
+                incompleteReason: nil,
+                loadingPhase: .idle,
+                canLoadMore: false,
+                canLoadAll: false
+            ),
+            key: key,
+            generation: detailGeneration
+        )
+
+        try expectEqual(accepted, true, "The detail may still finish in its bounded cache.")
+        try expectEqual(
+            cache.successfulSnapshot(for: source)?.result.sessionRows.first?.title,
+            "Newest list title",
+            "A detail started from an older summary generation must not roll back newer list metadata."
+        )
     }
 
     private func progressiveDetailRetainsAcceptedMessagesOnCancelAndRetry() throws {

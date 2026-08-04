@@ -652,6 +652,40 @@ fn overlapping_roots_contribute_one_unique_keyset_row() {
 }
 
 #[test]
+fn unreadable_keyset_root_is_typed_limited_and_keeps_its_blocker() {
+    let app_data_dir = env::temp_dir().join(format!(
+        "skills-copilot-unreadable-session-root-test-{}-{}",
+        std::process::id(),
+        unique_suffix(),
+    ));
+    let host = test_host(app_data_dir.clone());
+    let response = host.handle(ServiceRequest {
+        id: Some("unreadable-session-root".to_string()),
+        method: "session.previewLocalSessions".to_string(),
+        params: json!({
+            "agent": "codex",
+            "authorized_roots": ["relative-session-root"],
+            "auto_discover": false,
+            "scope": "all",
+            "include_content_items": false,
+            "paging_mode": "keyset",
+            "limit": 100
+        }),
+    });
+    assert!(response.ok, "{:?}", response.error);
+    let page = response.result.expect("unreadable root page");
+    assert_eq!(page["source_completeness"], "limited");
+    assert_eq!(page["incomplete_reason"], "unreadable_source");
+    assert_eq!(page.pointer("/roots/0/status"), Some(&json!("blocked")));
+    assert!(page["blocker_notes"]
+        .as_array()
+        .is_some_and(|rows| !rows.is_empty()));
+    assert_eq!(page["authorized"], false);
+
+    let _ = fs::remove_dir_all(app_data_dir);
+}
+
+#[test]
 fn request_byte_exhaustion_is_terminal_and_keeps_accepted_rows() {
     let fixture = OrderedSessionFixture::new(
         "request-byte-budget",

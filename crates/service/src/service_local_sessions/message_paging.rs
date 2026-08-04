@@ -14,7 +14,7 @@ const SKIP_LINE_CURSOR_MARKER: &str = "skip-line";
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum MessageRecordProbe {
-    FinalMessage,
+    PagedMessage,
     NonFinal,
     Unresolved,
 }
@@ -40,7 +40,7 @@ struct MessagePageScan {
     scanned_bytes: u64,
 }
 
-struct FinalMessageDraft {
+struct PagedMessageDraft {
     content: LocalSessionContentDraft,
     goal_digest: Option<String>,
 }
@@ -489,7 +489,7 @@ fn scan_message_page(
             offset = offset.saturating_add(1);
             let draft_index = if first_record { initial_draft_index } else { 0 };
             if let Some(record) = retained_message_record(&mut state) {
-                let drafts = final_message_drafts(record, prefer_response_items)?;
+                let drafts = paged_message_drafts(record, prefer_response_items)?;
                 for (index, draft) in drafts.into_iter().enumerate().skip(draft_index) {
                     if draft.goal_digest.as_ref() == last_goal_digest.as_ref()
                         && draft.goal_digest.is_some()
@@ -497,7 +497,7 @@ fn scan_message_page(
                         continue;
                     }
                     let goal_digest = draft.goal_digest.clone();
-                    let item = final_message_item(
+                    let item = paged_message_item(
                         session_id,
                         record_start,
                         index,
@@ -544,7 +544,7 @@ fn scan_message_page(
     if offset == snapshot_bytes {
         let draft_index = if first_record { initial_draft_index } else { 0 };
         if let Some(record) = retained_message_record(&mut state) {
-            let drafts = final_message_drafts(record, prefer_response_items)?;
+            let drafts = paged_message_drafts(record, prefer_response_items)?;
             for (index, draft) in drafts.into_iter().enumerate().skip(draft_index) {
                 if draft.goal_digest.as_ref() == last_goal_digest.as_ref()
                     && draft.goal_digest.is_some()
@@ -553,7 +553,7 @@ fn scan_message_page(
                 }
                 let goal_digest = draft.goal_digest.clone();
                 let item =
-                    final_message_item(session_id, record_start, index, draft.content, redactor);
+                    paged_message_item(session_id, record_start, index, draft.content, redactor);
                 let exceeds_count = items.len() >= limit;
                 let exceeds_text = !items.is_empty()
                     && text_bytes.saturating_add(item.text.len()) > MAX_PAGE_TEXT_BYTES;
@@ -600,7 +600,7 @@ fn append_message_record_segment(
                 MessageRecordProbe::Unresolved
             };
             match probe {
-                MessageRecordProbe::FinalMessage => {
+                MessageRecordProbe::PagedMessage => {
                     Some(MessageRecordState::Retaining(std::mem::take(bytes)))
                 }
                 MessageRecordProbe::NonFinal => Some(MessageRecordState::Discarding),
@@ -638,12 +638,22 @@ fn probe_message_record(bytes: &[u8], prefer_response_items: bool) -> MessageRec
     if prefer_response_items && root_type == Some("event_msg") {
         return MessageRecordProbe::NonFinal;
     }
+    if root_type.is_some_and(is_tool_result_record_type) {
+        return MessageRecordProbe::NonFinal;
+    }
     let root_classification = local_session_record_classification(&root_fields, None);
     if let Some(probe) = conclusive_message_probe(root_classification) {
         return probe;
     }
     if let Some(payload) = top_level_object_value_fragment(&text, "payload") {
         let payload_fields = top_level_scalar_fields_from_prefix(payload);
+        if payload_fields
+            .get("type")
+            .and_then(Value::as_str)
+            .is_some_and(is_tool_result_record_type)
+        {
+            return MessageRecordProbe::NonFinal;
+        }
         let payload_classification = local_session_record_classification(&payload_fields, None);
         if let Some(probe) = conclusive_message_probe(payload_classification) {
             return probe;
@@ -660,16 +670,20 @@ fn probe_message_record(bytes: &[u8], prefer_response_items: bool) -> MessageRec
     MessageRecordProbe::Unresolved
 }
 
+fn is_tool_result_record_type(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase().replace(['_', '-'], "");
+    is_json_tool_result_type(&normalized)
+}
+
 fn conclusive_message_probe(
     classification: LocalSessionRecordClassification,
 ) -> Option<MessageRecordProbe> {
     match classification {
-        LocalSessionRecordClassification::User | LocalSessionRecordClassification::Assistant => {
-            Some(MessageRecordProbe::FinalMessage)
-        }
-        LocalSessionRecordClassification::Thinking
-        | LocalSessionRecordClassification::Tool
-        | LocalSessionRecordClassification::Deny => Some(MessageRecordProbe::NonFinal),
+        LocalSessionRecordClassification::User
+        | LocalSessionRecordClassification::Assistant
+        | LocalSessionRecordClassification::Thinking
+        | LocalSessionRecordClassification::Tool => Some(MessageRecordProbe::PagedMessage),
+        LocalSessionRecordClassification::Deny => Some(MessageRecordProbe::NonFinal),
         LocalSessionRecordClassification::KnownStructure
         | LocalSessionRecordClassification::Missing
         | LocalSessionRecordClassification::Unproven => None,
@@ -725,13 +739,13 @@ fn top_level_object_value_fragment<'a>(fragment: &'a str, requested_key: &str) -
     None
 }
 
-fn final_message_drafts(
+fn paged_message_drafts(
     record: &[u8],
     prefer_response_items: bool,
-) -> Result<Vec<FinalMessageDraft>, ServiceError> {
+) -> Result<Vec<PagedMessageDraft>, ServiceError> {
     let text = std::str::from_utf8(record).map_err(|_| {
         ServiceError::InvalidRequest(
-            "selected session contains a non-UTF-8 final message record".to_string(),
+            "selected session contains a non-UTF-8 message record".to_string(),
         )
     })?;
     let mut drafts = Vec::new();
@@ -747,25 +761,49 @@ fn final_message_drafts(
         }
         Err(LocalSessionJsonParseError::Invalid) => {
             if probe_message_record(record, prefer_response_items)
-                == MessageRecordProbe::FinalMessage
+                == MessageRecordProbe::PagedMessage
             {
                 return Err(ServiceError::InvalidRequest(
-                    "selected session contains an invalid final message record".to_string(),
+                    "selected session contains an invalid message record".to_string(),
                 ));
             }
             collect_text_session_content_drafts(text.trim(), None, &mut drafts);
         }
         Err(LocalSessionJsonParseError::UnsafeClassification) => {
             return Err(ServiceError::InvalidRequest(
-                "selected session contains an unsafe final message classification".to_string(),
+                "selected session contains an unsafe message classification".to_string(),
             ));
         }
     }
 
-    Ok(drafts
+    let mut complete_drafts = Vec::new();
+    for draft in drafts {
+        let skill_invocations = if draft.kind == "skill_call" {
+            Vec::new()
+        } else {
+            extract_skill_invocation_names(&draft.text)
+        };
+        let timestamp = draft.timestamp;
+        complete_drafts.push(draft);
+        complete_drafts.extend(skill_invocations.into_iter().map(|name| {
+            LocalSessionContentDraft {
+                kind: "skill_call".to_string(),
+                title: format!("Skill: {name}"),
+                text: name,
+                timestamp,
+                evidence_refs: Vec::new(),
+            }
+        }));
+    }
+
+    Ok(complete_drafts
         .into_iter()
         .filter_map(|mut draft| {
-            matches!(draft.kind.as_str(), "user_message" | "agent_reply").then(|| {
+            matches!(
+                draft.kind.as_str(),
+                "user_message" | "agent_reply" | "thinking" | "tool_call" | "skill_call"
+            )
+            .then(|| {
                 let goal_digest = if draft.kind == "user_message" {
                     if let Some(objective) = displayable_goal_message(&draft.text) {
                         draft.text = objective;
@@ -777,7 +815,7 @@ fn final_message_drafts(
                 } else {
                     None
                 };
-                FinalMessageDraft {
+                PagedMessageDraft {
                     content: draft,
                     goal_digest,
                 }
@@ -800,7 +838,7 @@ fn displayable_goal_message(text: &str) -> Option<String> {
     (!objective.is_empty()).then(|| objective.to_string())
 }
 
-fn final_message_item(
+fn paged_message_item(
     session_id: &str,
     record_offset: u64,
     draft_index: usize,
@@ -832,6 +870,20 @@ mod tests {
         let prefix = br#"{"timestamp":"2026-07-17T01:00:02Z","type":"response_item","payload":{"type":"custom_tool_call_output","output":"xxxxxxxx"#;
         assert_eq!(
             probe_message_record(prefix, true),
+            MessageRecordProbe::NonFinal
+        );
+    }
+
+    #[test]
+    fn probe_retains_tool_calls_but_not_tool_results() {
+        let call = br#"{"type":"response_item","payload":{"type":"custom_tool_call","name":"shell","input":"pwd"}}"#;
+        let result = br#"{"type":"response_item","payload":{"type":"custom_tool_call_output","output":"/tmp"}}"#;
+        assert_eq!(
+            probe_message_record(call, true),
+            MessageRecordProbe::PagedMessage
+        );
+        assert_eq!(
+            probe_message_record(result, true),
             MessageRecordProbe::NonFinal
         );
     }

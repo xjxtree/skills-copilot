@@ -18,6 +18,18 @@ This file summarizes the LLM/provider boundary.
 - LLM output is untrusted and copy-only by default.
 - LLM output must not create hidden writes, hidden task state, script execution,
   credential access, cloud sync, telemetry, or raw prompt/response persistence.
+- Task Preflight task text and untrusted provider output are returned for
+  copy-only use in the current app session and are excluded from persisted
+  prompt-run rows. Startup removes those fields from legacy Task Preflight rows
+  while retaining redacted diagnostic metadata.
+- Task Preflight confirmation shows a request summary and token/cost estimates.
+  After a send attempt, its complete redacted request and complete untrusted
+  response remain available through the paged, date-filtered in-memory history
+  until the app exits; neither value is written to disk.
+- Agent Copilot prompt builders include the complete available effective-skill,
+  finding, and conflict inputs for their scoped action. They do not silently
+  drop list suffixes to fit an internal item-count cap; an actual provider/model
+  context failure remains visible as a request failure.
 - Selected-skill Intelligent Analysis may render copy-only Agent Copilot
   provider output as Markdown for readability without changing the safety
   model.

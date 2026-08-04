@@ -273,7 +273,8 @@ final class SkillStore: ObservableObject {
     private var postRefreshSupplementalLoadTask: Task<Void, Never>?
     private var appSearchQuery = ""
     private var taskCockpitTimeoutTask: Task<Void, Never>?
-    private var taskCockpitServiceTask: Task<(TaskCockpitResult, String?), Error>?
+    private var taskCockpitServiceTask: Task<(TaskCockpitResult, String?, String?), Error>?
+    private var activeTaskCockpitPrompt: TaskCockpitPromptConfirmation?
     private var isSynchronizingSidebarSelection = false
     var filteredSkillListDataRevision = 0
     var filteredSkillListCache: FilteredSkillListCache?
@@ -360,7 +361,7 @@ final class SkillStore: ObservableObject {
     init(
         service: ServiceClient,
         fileSystemWatcher: (any FileSystemWatching)? = nil,
-        taskCockpitTimeoutSeconds: TimeInterval = 300,
+        taskCockpitTimeoutSeconds: TimeInterval = 620,
         taskCockpitHistoryStore: TaskCockpitHistoryStore = TaskCockpitHistoryStore(),
         autosaveDelayNanoseconds: UInt64 = UIOptimizationPresentation.configEditor.autosaveDelayNanoseconds
     ) {
@@ -799,6 +800,7 @@ final class SkillStore: ObservableObject {
         taskCockpitText = record.taskText
         setTaskCockpitAgentSelection(record.agentIDs, clearResult: false)
         taskCockpitResult = record.result
+        taskCockpitFailedProviderOutput = record.result.isUnavailable ? record.providerOutput : nil
         taskCockpitOperationState = record.operationState
         selectedTaskCockpitHistoryID = record.id
     }
@@ -1376,6 +1378,30 @@ final class SkillStore: ObservableObject {
         await handle.wait()
         if Task.isCancelled, currentSkillManagerSearchGeneration == generation {
             invalidateSkillManagerSearch()
+        }
+    }
+
+    func inspectSkillManagerLocalSource(sourcePath: String) async {
+        let sourcePath = sourcePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sourcePath.isEmpty,
+              !skillManagerStore.isInspectingSkillManagerLocalSource else { return }
+        skillManagerStore.isInspectingSkillManagerLocalSource = true
+        clearSkillManagerFeedback()
+        defer { skillManagerStore.isInspectingSkillManagerLocalSource = false }
+
+        do {
+            let inspection = try await service.inspectSkillManagerLocalSource(
+                sourcePath: sourcePath
+            )
+            guard !Task.isCancelled else { return }
+            skillManagerStore.skillManagerDirectLocalSource = SkillManagerDirectLocalSource(
+                sourcePath: sourcePath,
+                inspection: inspection
+            )
+        } catch {
+            guard !(error is CancellationError), !Task.isCancelled else { return }
+            skillManagerStore.skillManagerDirectLocalSource = nil
+            setSkillManagerError(error.localizedDescription)
         }
     }
 
@@ -2292,8 +2318,10 @@ final class SkillStore: ObservableObject {
         let selectedAgents = pending.agentIDs
         let candidateSkillIDs = pending.instanceIDs
         let previewID = pending.preview.previewID
+        let promptPreview = pending.preview
         let operationID = UUID()
         taskCockpitOperationID = operationID
+        activeTaskCockpitPrompt = pending
         isBuildingTaskCockpit = true
         taskCockpitPromptConfirmation = nil
         taskCockpitResult = nil
@@ -2318,6 +2346,7 @@ final class SkillStore: ObservableObject {
                         taskText: taskText,
                         reason: UIStrings.localizedServiceMessage(sendResult.message)
                     ),
+                    output?.isEmpty == false ? sendResult.outputText : nil,
                     output?.isEmpty == false ? sendResult.outputText : nil
                 )
             }
@@ -2327,7 +2356,8 @@ final class SkillStore: ObservableObject {
                     taskText: taskText,
                     agentIDs: selectedAgents
                 ),
-                nil
+                nil,
+                sendResult.outputText
             )
         }
         taskCockpitServiceTask = serviceTask
@@ -2351,7 +2381,14 @@ final class SkillStore: ObservableObject {
                     message: UIStrings.taskCockpitLoaded
                 )
             }
-            recordTaskCockpitHistory(result: result, taskText: taskText, agentIDs: selectedAgents)
+            recordTaskCockpitHistory(
+                result: result,
+                taskText: taskText,
+                agentIDs: selectedAgents,
+                promptPreview: promptPreview,
+                providerOutput: outcome.2
+            )
+            activeTaskCockpitPrompt = nil
         } catch {
             guard isCurrentTaskCockpitOperation(operationID) else { return }
             let message = UIStrings.localizedServiceMessage(error.localizedDescription)
@@ -2362,6 +2399,16 @@ final class SkillStore: ObservableObject {
                 phase: .failed,
                 message: UIStrings.taskCockpitFailed(message)
             )
+            if let result = taskCockpitResult {
+                recordTaskCockpitHistory(
+                    result: result,
+                    taskText: taskText,
+                    agentIDs: selectedAgents,
+                    promptPreview: promptPreview,
+                    providerOutput: nil
+                )
+            }
+            activeTaskCockpitPrompt = nil
         }
     }
 
@@ -2381,6 +2428,7 @@ final class SkillStore: ObservableObject {
         guard taskCockpitOperationID != nil, isBuildingTaskCockpit else { return }
         let taskText = taskCockpitOperationState.taskText
         let message = UIStrings.taskCockpitCancelled
+        let activePrompt = activeTaskCockpitPrompt
         taskCockpitTimeoutTask?.cancel()
         taskCockpitTimeoutTask = nil
         taskCockpitServiceTask?.cancel()
@@ -2389,13 +2437,22 @@ final class SkillStore: ObservableObject {
         isBuildingTaskCockpit = false
         taskCockpitPromptConfirmation = nil
         taskCockpitFailedProviderOutput = nil
-        if publishFallbackResult {
-            taskCockpitResult = .unavailable(taskText: taskText, reason: message)
-        }
+        let cancelledResult = TaskCockpitResult.unavailable(taskText: taskText, reason: message)
+        if publishFallbackResult { taskCockpitResult = cancelledResult }
         taskCockpitOperationState = taskCockpitOperationState.finished(
             phase: .cancelled,
             message: message
         )
+        if let activePrompt {
+            recordTaskCockpitHistory(
+                result: cancelledResult,
+                taskText: taskText,
+                agentIDs: activePrompt.agentIDs,
+                promptPreview: activePrompt.preview,
+                providerOutput: nil
+            )
+        }
+        activeTaskCockpitPrompt = nil
     }
 
     func refreshSelectedAgentLocalSessions() async {
@@ -4306,28 +4363,34 @@ final class SkillStore: ObservableObject {
         taskCockpitFailedProviderOutput = nil
         taskCockpitPromptConfirmation = nil
         isPreviewingTaskCockpitPrompt = false
-        selectedTaskCockpitHistoryID = nil
         if isBuildingTaskCockpit {
             cancelTaskCockpitBuild(publishFallbackResult: false)
         } else {
+            activeTaskCockpitPrompt = nil
             taskCockpitOperationState = .idle
         }
+        selectedTaskCockpitHistoryID = nil
     }
 
-    private func recordTaskCockpitHistory(result: TaskCockpitResult, taskText: String, agentIDs: [String]) {
+    private func recordTaskCockpitHistory(
+        result: TaskCockpitResult,
+        taskText: String,
+        agentIDs: [String],
+        promptPreview: LLMPromptPreview?,
+        providerOutput: String?
+    ) {
         let normalizedTask = taskText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalizedTask.isEmpty, !result.isUnavailable else { return }
+        guard !normalizedTask.isEmpty else { return }
         let record = TaskCockpitHistoryRecord(
             taskText: normalizedTask,
             agentIDs: agentIDs,
             result: result,
-            operationState: taskCockpitOperationState
+            operationState: taskCockpitOperationState,
+            promptPreview: promptPreview,
+            providerOutput: providerOutput
         )
         taskCockpitHistory.insert(record, at: 0)
         selectedTaskCockpitHistoryID = record.id
-        if taskCockpitHistory.count > TaskCockpitHistoryStore.maxRecords {
-            taskCockpitHistory.removeLast(taskCockpitHistory.count - TaskCockpitHistoryStore.maxRecords)
-        }
     }
 
     private func resetTaskCockpitAgentSelectionToSidebarDefault(clearResult: Bool) {
@@ -4386,17 +4449,29 @@ final class SkillStore: ObservableObject {
         guard isCurrentTaskCockpitOperation(operationID) else { return }
         let timeoutSeconds = roundedTaskCockpitTimeoutSeconds
         let message = UIStrings.taskCockpitTimedOut(timeoutSeconds)
+        let activePrompt = activeTaskCockpitPrompt
         taskCockpitOperationID = nil
         taskCockpitTimeoutTask = nil
         taskCockpitServiceTask?.cancel()
         taskCockpitServiceTask = nil
         isBuildingTaskCockpit = false
-        taskCockpitResult = .unavailable(taskText: taskText, reason: message)
+        let timedOutResult = TaskCockpitResult.unavailable(taskText: taskText, reason: message)
+        taskCockpitResult = timedOutResult
         taskCockpitFailedProviderOutput = nil
         taskCockpitOperationState = taskCockpitOperationState.finished(
             phase: .timedOut,
             message: message
         )
+        if let activePrompt {
+            recordTaskCockpitHistory(
+                result: timedOutResult,
+                taskText: taskText,
+                agentIDs: activePrompt.agentIDs,
+                promptPreview: activePrompt.preview,
+                providerOutput: nil
+            )
+        }
+        activeTaskCockpitPrompt = nil
     }
 
     private func finishTaskCockpitOperation(_ operationID: UUID, phase: TaskCockpitOperationState.Phase, message: String) {

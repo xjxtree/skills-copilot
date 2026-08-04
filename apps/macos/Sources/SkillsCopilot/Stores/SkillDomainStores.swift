@@ -127,6 +127,7 @@ final class SkillManagerStore: ObservableObject {
     @Published var isSkillManagerPresented = false
     @Published var skillManagerTools: [SkillManagerToolRecord] = []
     @Published var skillManagerSearchResult: SkillManagerSearchRecord?
+    @Published var skillManagerDirectLocalSource: SkillManagerDirectLocalSource?
     @Published var skillManagerInstalledByScope: [SkillManagerScope: SkillManagerInstalledListRecord] = [:]
     @Published var skillManagerSearchVisibility = SkillManagerVisibleResults<String>()
     @Published var skillManagerMutationConfirmation: SkillManagerMutationConfirmation?
@@ -138,6 +139,7 @@ final class SkillManagerStore: ObservableObject {
     @Published var skillManagerMessage: String?
     @Published var isLoadingSkillManagerTools = false
     @Published var isSearchingSkillManager = false
+    @Published var isInspectingSkillManagerLocalSource = false
     @Published var isListingSkillManagerInstalled = false
     @Published var isPreviewingSkillManagerMutation = false
     @Published var isPreviewingSkillManagerLocalCreate = false

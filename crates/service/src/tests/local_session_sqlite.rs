@@ -198,7 +198,76 @@ fn codex_summary_uses_effective_thread_index_and_exact_project_scope() {
 }
 
 #[test]
-fn opencode_sqlite_summary_is_bounded_and_final_messages_page_past_tool_noise() {
+fn codex_summary_refresh_uses_the_latest_renamed_title() {
+    let (host, root) = sqlite_host("codex-renamed-title");
+    let codex_home = host.adapter_ctx.user_home.join(".codex");
+    let sessions = codex_home.join("sessions/2026/08/03");
+    fs::create_dir_all(&sessions).expect("create Codex sessions directory");
+    let rollout_path = sessions.join("rollout-renamed.jsonl");
+    fs::write(
+        &rollout_path,
+        "{\"type\":\"session_meta\",\"payload\":{}}\n",
+    )
+    .expect("write rollout fixture");
+
+    let connection =
+        Connection::open(codex_home.join("state_5.sqlite")).expect("open Codex state database");
+    connection
+        .execute_batch(
+            "CREATE TABLE threads (id TEXT PRIMARY KEY, title TEXT NOT NULL, cwd TEXT NOT NULL, rollout_path TEXT NOT NULL, preview TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, created_at_ms INTEGER, updated_at_ms INTEGER, archived INTEGER NOT NULL, source TEXT NOT NULL);",
+        )
+        .expect("create Codex thread index schema");
+    connection
+        .execute(
+            "INSERT INTO threads (id, title, cwd, rollout_path, preview, created_at, updated_at, created_at_ms, updated_at_ms, archived, source) VALUES (?1, ?2, ?3, ?4, '', 1, 1, 1000, 1000, 0, 'vscode')",
+            params!["renamed", "Stale title", "/tmp/project", rollout_path.to_string_lossy()],
+        )
+        .expect("insert stale Codex thread title");
+    drop(connection);
+
+    fs::write(
+        codex_home.join("session_index.jsonl"),
+        concat!(r#"{"id":"renamed","thread_name":"Stale title"}"#, "\n"),
+    )
+    .expect("write initial Codex session title");
+
+    let initial = host
+        .preview_local_sessions(LocalSessionPreviewParams {
+            include_content_items: Some(false),
+            scope: Some("all".to_string()),
+            ..sqlite_preview_params("codex")
+        })
+        .expect("load initial Codex sessions");
+    assert_eq!(initial.session_rows.len(), 1);
+    assert_eq!(initial.session_rows[0].title, "Stale title");
+
+    fs::write(
+        codex_home.join("session_index.jsonl"),
+        concat!(
+            r#"{"id":"renamed","thread_name":"Stale title"}"#,
+            "\n",
+            r#"{"id":"renamed","thread_name":"Renamed title"}"#,
+            "\n"
+        ),
+    )
+    .expect("write renamed Codex session title");
+
+    let refreshed = host
+        .preview_local_sessions(LocalSessionPreviewParams {
+            include_content_items: Some(false),
+            scope: Some("all".to_string()),
+            ..sqlite_preview_params("codex")
+        })
+        .expect("refresh Codex sessions after rename");
+
+    assert_eq!(refreshed.session_rows.len(), 1);
+    assert_eq!(refreshed.session_rows[0].title, "Renamed title");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn opencode_sqlite_summary_is_bounded_and_all_process_events_page_past_240() {
     let (host, root) = sqlite_host("opencode-sqlite");
     let db_path = host
         .adapter_ctx
@@ -228,7 +297,7 @@ fn opencode_sqlite_summary_is_bounded_and_final_messages_page_past_tool_noise() 
     connection
         .execute(
             "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params!["assistant-tools", "session-1", 1_001_i64, 2_200_i64, r#"{"role":"assistant"}"#],
+            params!["assistant-tools", "session-1", 1_001_i64, 2_200_i64, r#"{"role":"assistant","finish":"tool-calls"}"#],
         )
         .expect("insert tool message");
     let transaction = connection.transaction().expect("begin tool transaction");
@@ -248,6 +317,19 @@ fn opencode_sqlite_summary_is_bounded_and_final_messages_page_past_tool_noise() 
             .expect("insert tool part");
     }
     transaction.commit().expect("commit tool transaction");
+    connection
+        .execute(
+            "INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                "progress-text",
+                "assistant-tools",
+                "session-1",
+                2_201_i64,
+                2_201_i64,
+                r#"{"type":"text","text":"OpenCode 中间分析"}"#
+            ],
+        )
+        .expect("insert OpenCode progress text");
     for (message_id, role, text, timestamp) in [
         ("user-goal", "user", "目标消息必须展示", 2_300_i64),
         (
@@ -257,10 +339,15 @@ fn opencode_sqlite_summary_is_bounded_and_final_messages_page_past_tool_noise() 
             2_400_i64,
         ),
     ] {
+        let message_data = if role == "assistant" {
+            serde_json::json!({"role": role, "finish": "stop"}).to_string()
+        } else {
+            serde_json::json!({"role": role}).to_string()
+        };
         connection
             .execute(
                 "INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![message_id, "session-1", timestamp, timestamp, format!(r#"{{"role":"{role}"}}"#)],
+                params![message_id, "session-1", timestamp, timestamp, message_data],
             )
             .expect("insert final message");
         connection
@@ -282,32 +369,49 @@ fn opencode_sqlite_summary_is_bounded_and_final_messages_page_past_tool_noise() 
     assert_eq!(preview.session_rows[0].excerpt, "目标消息必须展示");
     let session_id = preview.session_rows[0].id.clone();
 
-    let first = host
-        .list_local_session_messages(sqlite_message_params("opencode", &session_id, None, None))
-        .expect("first OpenCode message page");
-    assert!(first.content_items.is_empty());
-    assert!(first.has_more);
-    let second = host
-        .list_local_session_messages(sqlite_message_params(
-            "opencode",
-            &session_id,
-            first.next_cursor,
-            Some(first.source_revision),
-        ))
-        .expect("second OpenCode message page");
+    let mut cursor = None;
+    let mut revision = None;
+    let mut content_items = Vec::new();
+    let mut total_count = None;
+    for _ in 0..40 {
+        let page = host
+            .list_local_session_messages(sqlite_message_params(
+                "opencode",
+                &session_id,
+                cursor,
+                revision,
+            ))
+            .expect("OpenCode process page");
+        content_items.extend(page.content_items);
+        cursor = page.next_cursor;
+        revision = Some(page.source_revision);
+        total_count = page.total_count;
+        if !page.has_more {
+            break;
+        }
+    }
     assert_eq!(
-        second
-            .content_items
+        content_items
             .iter()
+            .filter(|item| item.kind == "tool_call")
+            .count(),
+        1_200,
+        "selected session detail must not inherit the 240-row preview cap"
+    );
+    assert_eq!(
+        content_items
+            .iter()
+            .filter(|item| item.kind != "tool_call")
             .map(|item| (item.kind.as_str(), item.text.as_str()))
             .collect::<Vec<_>>(),
         vec![
+            ("thinking", "OpenCode 中间分析"),
             ("user_message", "目标消息必须展示"),
             ("agent_reply", "最终回复必须展示")
         ]
     );
-    assert!(!second.has_more);
-    assert_eq!(second.total_count, Some(2));
+    assert_eq!(content_items.len(), 1_203);
+    assert_eq!(total_count, Some(1_203));
 
     let detail = host
         .preview_local_sessions(LocalSessionPreviewParams {
@@ -322,12 +426,16 @@ fn opencode_sqlite_summary_is_bounded_and_final_messages_page_past_tool_noise() 
         .content_items
         .iter()
         .all(|item| matches!(item.kind.as_str(), "thinking" | "tool_call")));
+    assert!(detail.session_rows[0]
+        .content_items
+        .iter()
+        .any(|item| item.kind == "thinking" && item.text == "OpenCode 中间分析"));
 
     let _ = fs::remove_dir_all(root);
 }
 
 #[test]
-fn hermes_sqlite_uses_current_state_database_and_pages_only_user_and_final_reply() {
+fn hermes_sqlite_uses_current_state_database_and_pages_thinking_separately() {
     let (host, root) = sqlite_host("hermes-sqlite");
     let db_path = host.adapter_ctx.user_home.join(".hermes/state.db");
     fs::create_dir_all(db_path.parent().expect("database parent")).expect("create database parent");
@@ -341,7 +449,7 @@ fn hermes_sqlite_uses_current_state_database_and_pages_only_user_and_final_reply
     connection
         .execute(
             "INSERT INTO sessions (id, source, started_at, ended_at, message_count, tool_call_count, title) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params!["hermes-1", "cli", 10.0_f64, 13.0_f64, 4_i64, 1_i64, "Hermes Current Session"],
+            params!["hermes-1", "cli", 10.0_f64, 13.0_f64, 5_i64, 2_i64, "Hermes Current Session"],
         )
         .expect("insert Hermes session");
     connection
@@ -354,6 +462,7 @@ fn hermes_sqlite_uses_current_state_database_and_pages_only_user_and_final_reply
         ("user", "Hermes 用户目标", 10.0_f64, "", "", ""),
         ("assistant", "", 11.0_f64, "", "", "内部思考"),
         ("assistant", "", 12.0_f64, "search", "{}", ""),
+        ("assistant", "Hermes 中间分析", 12.5_f64, "search", "{}", ""),
         ("assistant", "Hermes 最终回复", 13.0_f64, "", "", ""),
     ] {
         connection
@@ -386,11 +495,26 @@ fn hermes_sqlite_uses_current_state_database_and_pages_only_user_and_final_reply
             .collect::<Vec<_>>(),
         vec![
             ("user_message", "Hermes 用户目标"),
+            ("thinking", "内部思考"),
+            ("tool_call", "{}"),
+            ("thinking", "Hermes 中间分析"),
+            ("tool_call", "{}"),
             ("agent_reply", "Hermes 最终回复")
         ]
     );
-    assert_eq!(page.total_count, Some(2));
+    assert_eq!(page.total_count, Some(6));
     assert!(!page.has_more);
+    let detail = host
+        .preview_local_sessions(LocalSessionPreviewParams {
+            session_id: Some(preview.session_rows[0].id.clone()),
+            include_content_items: Some(true),
+            ..sqlite_preview_params("hermes")
+        })
+        .expect("load Hermes process detail");
+    assert!(detail.session_rows[0]
+        .content_items
+        .iter()
+        .any(|item| item.kind == "thinking" && item.text == "Hermes 中间分析"));
 
     let _ = fs::remove_dir_all(root);
 }
@@ -473,7 +597,7 @@ fn openclaw_uses_current_agent_sqlite_and_ignores_legacy_or_internal_sessions() 
         ),
         (
             2_i64,
-            serde_json::json!({"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"read"}]}}),
+            serde_json::json!({"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"OpenClaw 中间分析"},{"type":"toolCall","name":"read"}]}}),
         ),
         (
             3_i64,
@@ -527,9 +651,25 @@ fn openclaw_uses_current_agent_sqlite_and_ignores_legacy_or_internal_sessions() 
             .collect::<Vec<_>>(),
         vec![
             ("user_message", "OpenClaw 用户目标"),
+            ("thinking", "OpenClaw 中间分析"),
+            ("tool_call", "read"),
             ("agent_reply", "OpenClaw 最终回复")
         ]
     );
+    let detail = host
+        .preview_local_sessions(LocalSessionPreviewParams {
+            session_id: Some(preview.session_rows[0].id.clone()),
+            include_content_items: Some(true),
+            scope: Some("project".to_string()),
+            project_root: Some(workspace.to_string_lossy().to_string()),
+            current_cwd: Some(workspace.to_string_lossy().to_string()),
+            ..sqlite_preview_params("openclaw")
+        })
+        .expect("load OpenClaw process detail");
+    assert!(detail.session_rows[0]
+        .content_items
+        .iter()
+        .any(|item| item.kind == "thinking" && item.text == "OpenClaw 中间分析"));
 
     let _ = fs::remove_dir_all(root);
 }

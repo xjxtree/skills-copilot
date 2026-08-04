@@ -26,19 +26,26 @@ use crate::{
 };
 
 mod archive;
+mod local_source;
 pub use archive::{
     apply_local_archive_import, apply_local_archive_update, preview_local_archive_import,
     preview_local_archive_update, SkillManagerLocalArchiveImportParams,
     SkillManagerLocalArchiveImportRecord, SkillManagerLocalArchiveUpdateParams,
     SkillManagerLocalArchiveUpdateRecord,
 };
+#[cfg(test)]
+use local_source::inspect_local_source_with_executable;
+pub use local_source::{
+    inspect_local_source_with_manager, SkillManagerInspectLocalSourceParams,
+    SkillManagerLocalSourceInspectionRecord, SkillManagerLocalSourceSkillRecord,
+};
 
 const DEFAULT_MANAGER_TOOL: &str = "npx-skills";
 const SKILLS_NPM_TOOL: &str = "skills-npm";
 const SKILLS_CLI_BINARY: &str = "skills";
 const NPX_BINARY: &str = "npx";
-const MAX_CAPTURE_BYTES: usize = 32_000;
 const MAX_MACHINE_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
+const MAX_CAPTURE_BYTES: usize = MAX_MACHINE_OUTPUT_BYTES;
 const MAX_MANAGER_LOCK_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_REMOVAL_ENTRY_COUNT: usize = 10_000;
 
@@ -137,6 +144,8 @@ pub struct SkillManagerInstalledRecord {
     pub source: Option<String>,
     pub source_kind: String,
     pub agents: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub separable_agents: Option<Vec<String>>,
     pub scope: Option<String>,
     pub path: Option<String>,
     #[serde(default, skip_serializing)]
@@ -344,6 +353,7 @@ pub fn list_skill_management_tools() -> Vec<SkillManagerToolRecord> {
             operations: [
                 "search",
                 "listInstalled",
+                "inspectLocalSource",
                 "previewInstall",
                 "applyInstall",
                 "previewRemove",
@@ -366,6 +376,8 @@ pub fn list_skill_management_tools() -> Vec<SkillManagerToolRecord> {
                 "Network-backed search/install/update run only after explicit app confirmation."
                     .to_string(),
                 "Symlink distribution is the default; copy is opt-in.".to_string(),
+                "Local folders are inspected without installation and remain in place."
+                    .to_string(),
             ],
         },
         SkillManagerToolRecord {
@@ -443,10 +455,18 @@ pub fn search_skills_with_manager(
 }
 
 pub fn list_installed_skills_with_manager(
+    catalog: &Catalog,
     ctx: &AdapterContext,
     params: &SkillManagerListInstalledParams,
 ) -> Result<SkillManagerInstalledListRecord, CommandError> {
-    list_installed_skills_with_manager_targets(ctx, params, true)
+    let mut result = list_installed_skills_with_manager_targets(ctx, params, true)?;
+    enrich_installed_removal_capabilities(
+        catalog,
+        ctx,
+        params.scope.as_deref(),
+        &mut result.installed,
+    )?;
+    Ok(result)
 }
 
 fn list_installed_skills_with_manager_targets(
@@ -805,6 +825,11 @@ fn build_install_preview(
     if !skill_names.is_empty() {
         args.push("--full-depth".to_string());
     }
+    let local_source_path = resolve_manager_local_source_path(ctx, params.scope.as_deref(), source);
+    let source_binding = local_source_path
+        .as_deref()
+        .map(|path| local_source::local_source_install_binding(path, &skill_names))
+        .transpose()?;
     let agents = required_manager_agents(&params.agents)?;
     append_agent_args(&mut args, &agents);
     append_scope_args(&mut args, params.scope.as_deref())?;
@@ -816,8 +841,8 @@ fn build_install_preview(
         args.push("--copy".to_string());
     }
     args.push("-y".to_string());
-    let network_required = source_requires_network(source);
-    command_preview(
+    let network_required = local_source_path.is_none();
+    command_preview_with_binding(
         ctx,
         CommandPreviewDraft {
             operation: "install",
@@ -834,6 +859,7 @@ fn build_install_preview(
             source: Some(source.to_string()),
             skills: skill_names,
         },
+        source_binding.as_deref(),
     )
 }
 
@@ -1010,46 +1036,11 @@ fn build_physical_remove_preview(
     append_agent_args(&mut command, &agents);
     append_scope_args(&mut command, params.scope.as_deref())?;
 
-    let mut targets_by_path: BTreeMap<PathBuf, PhysicalRemovalTarget> = BTreeMap::new();
-    for (record, manager_agent) in &selected_records {
-        let entry_path = removal_entry_path(record)?;
-        validate_physical_removal_target(ctx, manager_agent, &expected_scope, &entry_path)?;
-        let (kind, revision) = physical_removal_entry_revision(&entry_path)?;
-        let target = targets_by_path
-            .entry(entry_path.clone())
-            .or_insert_with(|| PhysicalRemovalTarget {
-                instance_ids: Vec::new(),
-                agents: Vec::new(),
-                entry_path,
-                kind,
-                revision: revision.clone(),
-            });
-        if target.kind != kind || target.revision != revision {
-            return Err(CommandError::InvalidSkillManagerRequest(
-                "selected physical target changed while the removal preview was built".to_string(),
-            ));
-        }
-        target.instance_ids.push(record.id.clone());
-        target.agents.push(manager_agent.clone());
-    }
-    let mut physical_targets = targets_by_path.into_values().collect::<Vec<_>>();
-    for target in &mut physical_targets {
-        target.instance_ids.sort();
-        target.instance_ids.dedup();
-        target.agents.sort();
-        target.agents.dedup();
-    }
-    validate_selected_targets_are_effective(
+    let (physical_targets, preserved_paths) = validated_physical_removal_targets(
         ctx,
         &expected_scope,
         &selected_records,
-        &physical_targets,
-    )?;
-    let preserved_paths = validate_and_collect_preserved_paths(
-        ctx,
-        &expected_scope,
         &preserved_records,
-        &physical_targets,
     )?;
     let selected_instance_ids = physical_targets
         .iter()
@@ -1134,6 +1125,47 @@ fn build_physical_remove_preview(
             preserved_paths,
         }),
     ))
+}
+
+fn validated_physical_removal_targets(
+    ctx: &AdapterContext,
+    scope: &str,
+    selected_records: &[(SkillRecord, String)],
+    preserved_records: &[(SkillRecord, String)],
+) -> Result<(Vec<PhysicalRemovalTarget>, Vec<PathBuf>), CommandError> {
+    let mut targets_by_path: BTreeMap<PathBuf, PhysicalRemovalTarget> = BTreeMap::new();
+    for (record, manager_agent) in selected_records {
+        let entry_path = removal_entry_path(record)?;
+        validate_physical_removal_target(ctx, manager_agent, scope, &entry_path)?;
+        let (kind, revision) = physical_removal_entry_revision(&entry_path)?;
+        let target = targets_by_path
+            .entry(entry_path.clone())
+            .or_insert_with(|| PhysicalRemovalTarget {
+                instance_ids: Vec::new(),
+                agents: Vec::new(),
+                entry_path,
+                kind,
+                revision: revision.clone(),
+            });
+        if target.kind != kind || target.revision != revision {
+            return Err(CommandError::InvalidSkillManagerRequest(
+                "selected physical target changed while the removal preview was built".to_string(),
+            ));
+        }
+        target.instance_ids.push(record.id.clone());
+        target.agents.push(manager_agent.clone());
+    }
+    let mut physical_targets = targets_by_path.into_values().collect::<Vec<_>>();
+    for target in &mut physical_targets {
+        target.instance_ids.sort();
+        target.instance_ids.dedup();
+        target.agents.sort();
+        target.agents.dedup();
+    }
+    validate_selected_targets_are_effective(ctx, scope, selected_records, &physical_targets)?;
+    let preserved_paths =
+        validate_and_collect_preserved_paths(ctx, scope, preserved_records, &physical_targets)?;
+    Ok((physical_targets, preserved_paths))
 }
 
 fn require_complete_physical_identity_set(
@@ -2065,17 +2097,47 @@ impl SkillManagerCommandOutput {
 
 fn command_preview(
     ctx: &AdapterContext,
-    mut draft: CommandPreviewDraft,
+    draft: CommandPreviewDraft,
+) -> Result<SkillManagerCommandPreview, CommandError> {
+    command_preview_with_binding(ctx, draft, None)
+}
+
+fn command_preview_with_binding(
+    ctx: &AdapterContext,
+    draft: CommandPreviewDraft,
+    confirmation_binding: Option<&str>,
 ) -> Result<SkillManagerCommandPreview, CommandError> {
     let executable = npx_executable()?;
+    command_preview_with_executable_and_binding(ctx, draft, &executable, confirmation_binding)
+}
+
+fn command_preview_with_executable(
+    ctx: &AdapterContext,
+    draft: CommandPreviewDraft,
+    executable: &Path,
+) -> Result<SkillManagerCommandPreview, CommandError> {
+    command_preview_with_executable_and_binding(ctx, draft, executable, None)
+}
+
+fn command_preview_with_executable_and_binding(
+    ctx: &AdapterContext,
+    mut draft: CommandPreviewDraft,
+    executable: &Path,
+    confirmation_binding: Option<&str>,
+) -> Result<SkillManagerCommandPreview, CommandError> {
     let command = {
         let mut command = vec![executable.to_string_lossy().to_string()];
         command.append(&mut draft.args);
         command
     };
     let will_run = draft.confirmed && (!draft.network_required || draft.network_allowed);
+    let mut token_binding = command.clone();
+    if let Some(binding) = confirmation_binding {
+        token_binding.push("--agent-copilot-source-revision".to_string());
+        token_binding.push(binding.to_string());
+    }
     let preview_token = preview_token(
-        &command,
+        &token_binding,
         &draft.cwd,
         draft.operation,
         draft.network_required,
@@ -2087,7 +2149,10 @@ fn command_preview(
         command,
         cwd: draft.cwd.to_string_lossy().to_string(),
         env: manager_env(ctx),
-        requires_confirmation: draft.operation != "search" && draft.operation != "listInstalled",
+        requires_confirmation: !matches!(
+            draft.operation,
+            "search" | "listInstalled" | "inspectLocalSource"
+        ),
         confirmed: draft.confirmed,
         network_required: draft.network_required,
         network_allowed: draft.network_allowed,
@@ -2477,12 +2542,22 @@ fn manager_cwd(ctx: &AdapterContext, scope: Option<&str>) -> Result<PathBuf, Com
         .unwrap_or_else(|| ctx.user_home.clone()))
 }
 
-fn source_requires_network(source: &str) -> bool {
+fn resolve_manager_local_source_path(
+    ctx: &AdapterContext,
+    scope: Option<&str>,
+    source: &str,
+) -> Option<PathBuf> {
     let source = source.trim();
-    !(source.starts_with('.')
-        || source.starts_with('/')
-        || source.starts_with("file://")
-        || Path::new(source).exists())
+    let path = if let Some(path) = source.strip_prefix("file://") {
+        PathBuf::from(path)
+    } else {
+        PathBuf::from(source)
+    };
+    if path.is_absolute() {
+        return Some(path);
+    }
+    let candidate = manager_cwd(ctx, scope).ok()?.join(&path);
+    (source.starts_with('.') || candidate.exists()).then_some(candidate)
 }
 
 fn install_risks(source: &str, network_required: bool) -> Vec<String> {
@@ -2630,6 +2705,7 @@ fn records_from_json_value(value: &Value) -> Vec<SkillManagerInstalledRecord> {
                 // manager-backed only after the matching scope lock proves it.
                 source_kind: "local".to_string(),
                 agents: string_array_field(&item, &["agents", "agent_targets", "agentTargets"]),
+                separable_agents: None,
                 scope: string_field(&item, &["scope"]),
                 path,
                 raw: item,
@@ -2693,6 +2769,157 @@ fn enrich_installed_records(
         }
         .to_string();
     }
+}
+
+fn enrich_installed_removal_capabilities(
+    catalog: &Catalog,
+    ctx: &AdapterContext,
+    scope: Option<&str>,
+    records: &mut [SkillManagerInstalledRecord],
+) -> Result<(), CommandError> {
+    let normalized_scope = normalize_manager_scope(scope)?.unwrap_or_else(|| "project".to_string());
+    let catalog_records = catalog.list_skill_records()?;
+    for record in records {
+        let physical_records = installed_record_physical_records(
+            ctx,
+            scope,
+            &normalized_scope,
+            record,
+            &catalog_records,
+        );
+        let reported_agents = record
+            .agents
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        record.separable_agents = Some(
+            default_agent_targets()
+                .into_iter()
+                .filter(|agent| reported_agents.contains(agent.as_str()))
+                .filter(|agent| {
+                    can_separately_remove_installed_agent(
+                        ctx,
+                        &normalized_scope,
+                        agent,
+                        &physical_records,
+                    )
+                })
+                .collect(),
+        );
+    }
+    Ok(())
+}
+
+fn installed_record_physical_records(
+    ctx: &AdapterContext,
+    scope: Option<&str>,
+    normalized_scope: &str,
+    installed: &SkillManagerInstalledRecord,
+    catalog_records: &[SkillRecord],
+) -> Vec<(SkillRecord, String)> {
+    let mut candidates = catalog_records
+        .iter()
+        .filter(|record| {
+            !record.state.eq_ignore_ascii_case("missing")
+                && record.read_only_reason.is_none()
+                && record.name.trim().eq_ignore_ascii_case(&installed.name)
+                && normalize_record_scope(&record.scope) == normalized_scope
+        })
+        .filter_map(|record| {
+            manager_agent_alias(&record.agent)
+                .ok()
+                .map(|agent| (record, agent))
+        })
+        .collect::<Vec<_>>();
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    let canonical_source = installed
+        .path
+        .as_deref()
+        .and_then(|path| installed_record_local_path(ctx, scope, path))
+        .map(|path| {
+            if path
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("SKILL.md"))
+            {
+                path
+            } else {
+                path.join("SKILL.md")
+            }
+        })
+        .and_then(|path| path.canonicalize().ok());
+    let matched_definition = canonical_source.as_ref().and_then(|source| {
+        candidates.iter().find_map(|(record, _)| {
+            [&record.path, &record.display_path]
+                .into_iter()
+                .any(|path| path.canonicalize().is_ok_and(|path| path == *source))
+                .then_some(record.definition_id.clone())
+        })
+    });
+    let definition_id = matched_definition.or_else(|| {
+        let definitions = candidates
+            .iter()
+            .map(|(record, _)| record.definition_id.as_str())
+            .collect::<BTreeSet<_>>();
+        if definitions.len() == 1 {
+            definitions.into_iter().next().map(str::to_string)
+        } else {
+            None
+        }
+    });
+    let Some(definition_id) = definition_id else {
+        return Vec::new();
+    };
+    candidates.retain(|(record, _)| record.definition_id == definition_id);
+    candidates
+        .into_iter()
+        .map(|(record, agent)| (record.clone(), agent))
+        .collect()
+}
+
+fn can_separately_remove_installed_agent(
+    ctx: &AdapterContext,
+    scope: &str,
+    selected_agent: &str,
+    records: &[(SkillRecord, String)],
+) -> bool {
+    let (selected, preserved): (Vec<_>, Vec<_>) = records
+        .iter()
+        .cloned()
+        .partition(|(_, agent)| agent == selected_agent);
+    !selected.is_empty()
+        && !preserved.is_empty()
+        && validated_physical_removal_targets(ctx, scope, &selected, &preserved).is_ok()
+}
+
+fn installed_record_local_path(
+    ctx: &AdapterContext,
+    scope: Option<&str>,
+    value: &str,
+) -> Option<PathBuf> {
+    let value = value.trim();
+    let path = if value == "$HOME" || value == "~" {
+        ctx.user_home.clone()
+    } else if value == "<project-root>" {
+        manager_cwd(ctx, scope).ok()?
+    } else if let Some(relative) = value
+        .strip_prefix("$HOME/")
+        .or_else(|| value.strip_prefix("~/"))
+    {
+        ctx.user_home.join(relative)
+    } else if let Some(relative) = value.strip_prefix("<project-root>/") {
+        manager_cwd(ctx, scope).ok()?.join(relative)
+    } else {
+        let path = PathBuf::from(value);
+        if path.is_absolute() {
+            path
+        } else {
+            manager_cwd(ctx, scope).ok()?.join(path)
+        }
+    };
+    Some(path)
 }
 
 fn read_manager_lock(ctx: &AdapterContext, scope: Option<&str>) -> Option<ManagerLockFile> {

@@ -6,6 +6,9 @@ pub(super) fn skill_manager_dispatch_params(method: &str) -> Value {
             json!({ "query": "frontend", "owner": "vercel-labs", "network_allowed": false })
         }
         "skillManager.listInstalled" => json!({ "scope": "project" }),
+        "skillManager.inspectLocalSource" => {
+            json!({ "source_path": "/tmp/missing-local-skill-source" })
+        }
         "skillManager.previewInstall" | "skillManager.applyInstall" => {
             json!({
                 "source": "vercel-labs/agent-skills",

@@ -52,11 +52,12 @@ struct ServiceClientRPCTests {
         try await configConsistencyRequestsUseExactBindings()
         try await localHistoryPageRequestsDecodeAliases()
         try await providerActivityPageRequestUsesExactBindings()
+        try await skillManagerLocalSourceInspectionUsesExactBindings()
         try await localSessionCursorRequestDecodesCompleteness()
         try await localSessionMessagePageRequestUsesExactBindings()
         try legacyConfigResponsesAreReadOnly()
         try unrelatedWritesDoNotGainConfigCASFields()
-        try await taskCockpitProviderCallsUseFiveMinuteSidecarTimeout()
+        try await taskCockpitProviderCallsUseTenMinuteSidecarTimeout()
     }
 
     private func localHistoryPageRequestsDecodeAliases() async throws {
@@ -137,6 +138,40 @@ struct ServiceClientRPCTests {
         try expectEqual(params["limit"] as? Int, Optional(50), "Provider activity page limit")
         try expectEqual(params["cursor"] as? String, Optional("v1:activity-page-2"), "Provider activity cursor")
         try expectEqual(params["source_revision"] as? String, Optional("sha256:activity-revision"), "Provider activity source revision")
+    }
+
+    private func skillManagerLocalSourceInspectionUsesExactBindings() async throws {
+        let runner = RecordingServiceProcessRunner()
+        let client = ServiceClient(
+            processRunner: runner,
+            serviceURL: URL(fileURLWithPath: "/tmp/fake-service")
+        )
+
+        let inspection = try await client.inspectSkillManagerLocalSource(
+            sourcePath: "/tmp/local-package"
+        )
+
+        try expectEqual(
+            inspection.skills.map(\.name),
+            ["alpha-skill", "beta-skill"],
+            "Local-source RPC should decode every discovered skill."
+        )
+        try expectEqual(
+            inspection.sourceRevision,
+            "sha256:local-source",
+            "Local-source RPC should decode the content revision."
+        )
+        let params = try runner.params(for: "skillManager.inspectLocalSource")
+        try expectEqual(
+            params["source_path"] as? String,
+            "/tmp/local-package",
+            "Local-source RPC must preserve the selected absolute path."
+        )
+        try expectEqual(
+            runner.timeoutMilliseconds.last ?? nil,
+            120_000,
+            "Local-source manager inspection should use the external-command timeout."
+        )
     }
 
     private func localSessionCursorRequestDecodesCompleteness() async throws {
@@ -293,7 +328,7 @@ struct ServiceClientRPCTests {
         return object
     }
 
-    private func taskCockpitProviderCallsUseFiveMinuteSidecarTimeout() async throws {
+    private func taskCockpitProviderCallsUseTenMinuteSidecarTimeout() async throws {
         let runner = RecordingServiceProcessRunner()
         let client = ServiceClient(processRunner: runner, serviceURL: URL(fileURLWithPath: "/tmp/fake-service"))
 
@@ -311,8 +346,8 @@ struct ServiceClientRPCTests {
 
         try expectEqual(
             runner.timeoutMilliseconds,
-            [300_000, 300_000],
-            "Task Preflight provider preview and send should use the five-minute sidecar timeout."
+            [600_000, 600_000],
+            "Task Preflight provider preview and send should use the ten-minute sidecar timeout."
         )
         try expectEqual(
             runner.methods,
@@ -820,6 +855,8 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
             return Data(Self.localSessionMessagePageResponse.utf8)
         case "llm.listProviderActivity":
             return Data(Self.providerActivityPageResponse.utf8)
+        case "skillManager.inspectLocalSource":
+            return Data(Self.skillManagerLocalSourceInspectionResponse.utf8)
         case "llm.previewPrompt":
             return Data(Self.previewResponse.utf8)
         case "llm.confirmPromptAndSend":
@@ -863,6 +900,10 @@ private final class RecordingServiceProcessRunner: ServiceProcessRunning {
 
     private static let providerActivityPageResponse = """
     {"id":"test","ok":true,"result":{"generated_by":"local-v2.64","rows":[{"id":"activity-1","kind":"provider_call","timestamp":42,"title":"analyze","subtitle":"redacted metadata","status":"succeeded","evidence_refs":["provider-call:activity-1"]}],"source_revision":"sha256:activity-revision","returned_count":1,"total_count":130,"has_more":true,"next_cursor":"v1:activity-page-3","source_completeness":"enumerable","incomplete_reason":null,"safety_flags":{"provider_request_sent":false,"raw_prompt_persisted":false,"raw_response_persisted":false,"raw_trace_persisted":false}}}
+    """
+
+    private static let skillManagerLocalSourceInspectionResponse = """
+    {"id":"test","ok":true,"result":{"preview":{"tool_id":"npx-skills","operation":"inspectLocalSource","command":["/usr/local/bin/npx","skills","add","/tmp/local-package","--list","--full-depth"],"cwd":"/tmp/local-package","env":[],"requires_confirmation":false,"confirmed":false,"network_required":false,"network_allowed":true,"will_run":false,"preview_token":"inspect-token","summary":"Inspect local skills.","risks":[]},"output":{"status":"completed","exit_code":0,"stdout":"Found 2 skills","stderr":""},"source_path":"<local-source>/local-package","source_revision":"sha256:local-source","skills":[{"name":"alpha-skill","description":"Alpha local skill.","relative_path":"alpha/SKILL.md"},{"name":"beta-skill","description":"Beta local skill.","relative_path":"nested/beta/SKILL.md"}]}}
     """
 
     private static let sendResponse = """

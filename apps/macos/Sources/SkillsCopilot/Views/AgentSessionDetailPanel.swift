@@ -10,7 +10,8 @@ struct AgentSessionDetailPanel: View {
             session: store.selectedLocalSession,
             detailState: sessionStore.selectedLocalSessionDetailState,
             messageCompleteness: sessionStore.selectedLocalSessionMessageCompleteness,
-            gapNotes: store.selectedLocalSession == nil ? sessionStore.localSessionPreviewResult.gapNotes : [],
+            diagnosticNotes: sessionStore.localSessionPreviewResult.blockerNotes
+                + sessionStore.localSessionPreviewResult.gapNotes,
             isRefreshing: sessionStore.isPreviewingLocalSessions,
             showsLoadedRowsFilterNotice: sessionStore.localSessionCompleteness.hasMore,
             onRefresh: {
@@ -37,7 +38,7 @@ private struct AgentSessionContentPanel: View {
     let session: LocalSessionPreviewRow?
     let detailState: LocalSessionDetailState?
     let messageCompleteness: ListCompletenessState
-    let gapNotes: [String]
+    let diagnosticNotes: [String]
     let isRefreshing: Bool
     let showsLoadedRowsFilterNotice: Bool
     let onRefresh: () -> Void
@@ -137,17 +138,27 @@ private struct AgentSessionContentPanel: View {
                     }
                 }
             } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(emptySessionMessage)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if !gapNotes.isEmpty {
-                        Text(gapNotes.prefix(2).joined(separator: " "))
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
+                Text(emptySessionMessage)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if !diagnosticNotes.isEmpty {
+                DisclosureGroup(
+                    UIStrings.text("agentCopilot.sessions.diagnostics", "Source diagnostics")
+                ) {
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(Array(diagnosticNotes.enumerated()), id: \.offset) { _, note in
+                            Text("• \(note)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+                    .padding(.top, 4)
                 }
+                .font(.caption.bold())
             }
 
             if showsLoadedRowsFilterNotice {

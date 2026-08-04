@@ -36,6 +36,14 @@ extension ServiceClient {
         return result
     }
 
+    func inspectSkillManagerLocalSource(sourcePath: String) async throws -> SkillManagerLocalSourceInspectionRecord {
+        try await call(
+            method: "skillManager.inspectLocalSource",
+            params: SkillManagerInspectLocalSourceParams(sourcePath: sourcePath),
+            timeoutMS: 120_000
+        )
+    }
+
     func previewSkillManagerInstall(
         source: String,
         skills: [String],

@@ -19,6 +19,7 @@ const DEFAULT_SINGLE_REQUEST_TOKEN_LIMIT: u32 = 8_000;
 const DEFAULT_MONTHLY_BUDGET_USD: f64 = 5.0;
 const TEST_INPUT_TOKEN_ESTIMATE: u32 = 12;
 const TEST_OUTPUT_TOKEN_ESTIMATE: u32 = 4;
+const PROVIDER_OUTPUT_TOKEN_CEILING: u32 = 8_000;
 
 #[derive(Debug, Error)]
 pub enum ProviderError {
@@ -257,6 +258,12 @@ struct ProviderPromptFinish {
 struct ProviderPromptHttpSuccess {
     status: u16,
     body: String,
+}
+
+#[derive(Default)]
+struct ProviderPromptOutput {
+    text: Option<String>,
+    stopped_at_output_limit: bool,
 }
 
 impl Default for ProviderProfileStore {
@@ -640,7 +647,9 @@ pub fn send_provider_prompt(
             },
         );
     }
-    if profile.single_request_token_limit < estimated_total_tokens {
+    if params.action_type != "task_cockpit"
+        && profile.single_request_token_limit < estimated_total_tokens
+    {
         return finish_prompt(
             app_data_dir,
             &profile,
@@ -717,11 +726,24 @@ pub fn send_provider_prompt(
 
     match call_result {
         Ok(success) if (200..300).contains(&success.status) => {
-            let output_text = extract_output_text(profile.provider_type, &success.body);
+            let provider_output = extract_prompt_output(profile.provider_type, &success.body);
+            let output_text = provider_output.text;
             let response_validation =
                 validate_prompt_business_output(&params.action_type, output_text.as_deref());
             let (status, error_code, error_message) = match response_validation {
                 Ok(()) => ("succeeded".to_string(), None, None),
+                Err(_) if params.action_type == "task_cockpit"
+                    && provider_output.stopped_at_output_limit =>
+                {
+                    (
+                        "parse_failed".to_string(),
+                        Some("response_truncated".to_string()),
+                        Some(
+                            "Provider stopped Task Preflight output at the configured output-token limit before the JSON result was complete."
+                                .to_string(),
+                        ),
+                    )
+                }
                 Err(message) => (
                     "parse_failed".to_string(),
                     Some("response_schema_invalid".to_string()),
@@ -979,7 +1001,12 @@ fn send_prompt_request(
     timeout: Duration,
 ) -> Result<ProviderPromptHttpSuccess, Box<UreqError>> {
     let url = test_endpoint_url(profile);
-    let max_tokens = params.estimated_output_tokens.clamp(1, 8_000);
+    let max_tokens = provider_output_token_limit(
+        &params.action_type,
+        params.estimated_input_tokens,
+        params.estimated_output_tokens,
+        profile.single_request_token_limit,
+    );
     let mut request = ureq::post(&url)
         .timeout(timeout)
         .set("content-type", "application/json");
@@ -1024,16 +1051,41 @@ fn send_prompt_request(
     Ok(ProviderPromptHttpSuccess { status, body })
 }
 
-fn extract_output_text(provider_type: ProviderType, body: &str) -> Option<String> {
-    let value: Value = serde_json::from_str(body).ok()?;
-    match provider_type {
-        ProviderType::OpenAiCompatible => value
-            .pointer("/choices/0/message/content")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .map(ToOwned::to_owned),
-        ProviderType::ClaudeCompatible => {
+pub(crate) fn provider_output_token_limit(
+    action_type: &str,
+    estimated_input_tokens: u32,
+    estimated_output_tokens: u32,
+    single_request_token_limit: u32,
+) -> u32 {
+    if action_type == "task_cockpit" {
+        return PROVIDER_OUTPUT_TOKEN_CEILING;
+    }
+    let preferred_output_tokens = estimated_output_tokens;
+    let configured_remaining_tokens =
+        single_request_token_limit.saturating_sub(estimated_input_tokens);
+
+    preferred_output_tokens
+        .min(configured_remaining_tokens)
+        .clamp(1, PROVIDER_OUTPUT_TOKEN_CEILING)
+}
+
+fn extract_prompt_output(provider_type: ProviderType, body: &str) -> ProviderPromptOutput {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return ProviderPromptOutput::default();
+    };
+    let (text, stop_reason) = match provider_type {
+        ProviderType::OpenAiCompatible => (
+            value
+                .pointer("/choices/0/message/content")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty())
+                .map(ToOwned::to_owned),
+            value
+                .pointer("/choices/0/finish_reason")
+                .and_then(Value::as_str),
+        ),
+        ProviderType::ClaudeCompatible => (
             value
                 .get("content")
                 .and_then(Value::as_array)
@@ -1048,9 +1100,21 @@ fn extract_output_text(provider_type: ProviderType, body: &str) -> Option<String
                     } else {
                         Some(text.trim().to_string())
                     }
-                })
-        }
+                }),
+            value.get("stop_reason").and_then(Value::as_str),
+        ),
+    };
+    ProviderPromptOutput {
+        text,
+        stopped_at_output_limit: stop_reason.is_some_and(is_output_limit_stop_reason),
     }
+}
+
+fn is_output_limit_stop_reason(reason: &str) -> bool {
+    matches!(
+        reason.trim().to_ascii_lowercase().as_str(),
+        "length" | "max_tokens" | "max_output_tokens" | "token_limit"
+    )
 }
 
 fn test_endpoint_url(profile: &ProviderProfileRecord) -> String {

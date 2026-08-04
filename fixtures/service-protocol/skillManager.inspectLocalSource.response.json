@@ -1,0 +1,64 @@
+{
+  "id": "fixture-skill-manager-inspect-local-source",
+  "ok": true,
+  "result": {
+    "preview": {
+      "tool_id": "npx-skills",
+      "operation": "inspectLocalSource",
+      "command": [
+        "/usr/local/bin/npx",
+        "skills",
+        "add",
+        "/tmp/skills-copilot-local-package",
+        "--list",
+        "--full-depth"
+      ],
+      "cwd": "/tmp/skills-copilot-local-package",
+      "env": [
+        {
+          "key": "HOME",
+          "value": "/tmp/skills-copilot-home"
+        },
+        {
+          "key": "DISABLE_TELEMETRY",
+          "value": "1"
+        }
+      ],
+      "requires_confirmation": false,
+      "confirmed": false,
+      "network_required": false,
+      "network_allowed": true,
+      "will_run": false,
+      "preview_token": "skill-manager:fixture-inspect-local-source",
+      "summary": "Inspect 2 local skill(s) through npx skills without installing them.",
+      "risks": [
+        "The selected directory is read and validated locally; packaged scripts are not executed."
+      ],
+      "source": "/tmp/skills-copilot-local-package",
+      "skills": [
+        "alpha-skill",
+        "beta-skill"
+      ]
+    },
+    "output": {
+      "status": "completed",
+      "exit_code": 0,
+      "stdout": "Found 2 skills",
+      "stderr": ""
+    },
+    "source_path": "<local-source>/skills-copilot-local-package",
+    "source_revision": "sha256:0676f4f8c6f92cf153f2b526f3323cf3828104b5ba316255470b8bd9085d5c70",
+    "skills": [
+      {
+        "name": "alpha-skill",
+        "description": "Alpha local skill.",
+        "relative_path": "alpha/SKILL.md"
+      },
+      {
+        "name": "beta-skill",
+        "description": "Beta local skill.",
+        "relative_path": "nested/beta/SKILL.md"
+      }
+    ]
+  }
+}

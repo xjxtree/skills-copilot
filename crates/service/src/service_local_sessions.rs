@@ -18,8 +18,10 @@ mod paging;
 mod sqlite_sessions;
 
 use classification::{
-    is_internal_local_session_title_block, is_supported_local_session_file,
-    is_unhelpful_local_session_title, local_session_metadata_is_internal,
+    is_internal_local_session_title_block, is_json_thinking_type, is_json_tool_result_type,
+    is_json_tool_type, is_supported_local_session_file, is_unhelpful_local_session_title,
+    json_session_has_nonfinal_process_signal, local_session_metadata_is_internal,
+    local_session_phase_classification, local_session_phase_name_classification,
     local_session_role_classification, local_session_type_name_classification,
 };
 
@@ -155,6 +157,7 @@ impl ServiceHost {
             if let Some(result) = sqlite_sessions::preview_sqlite_sessions(
                 &adapter_ctx,
                 &params,
+                io,
                 requested_agent,
                 scope,
                 sort,
@@ -435,13 +438,18 @@ impl ServiceHost {
             next_offset: has_more.then_some(page_end),
             next_cursor: None,
             source_revision: None,
-            source_completeness: if candidate_set_was_truncated {
+            source_completeness: if candidate_set_was_truncated || !blocker_notes.is_empty() {
                 ListSourceCompleteness::Limited
             } else {
                 ListSourceCompleteness::Enumerable
             },
-            incomplete_reason: candidate_set_was_truncated
-                .then_some(ListIncompleteReason::SafetyBudget),
+            incomplete_reason: if candidate_set_was_truncated {
+                Some(ListIncompleteReason::SafetyBudget)
+            } else if !blocker_notes.is_empty() {
+                Some(ListIncompleteReason::UnreadableSource)
+            } else {
+                None
+            },
             candidate_set_truncated: candidate_set_was_truncated,
             user_message_count,
             total_message_count,
@@ -1417,6 +1425,7 @@ fn local_session_record_classification(
     inherited_role: Option<&str>,
 ) -> LocalSessionRecordClassification {
     let type_classification = local_session_type_classification(fields.get("type"));
+    let phase_classification = local_session_phase_classification(fields.get("phase"));
     let role_evidence = local_session_role_evidence(fields);
     let role_classification =
         if role_evidence.classification == LocalSessionRecordClassification::Missing {
@@ -1427,7 +1436,11 @@ fn local_session_record_classification(
             role_evidence.classification
         };
 
-    for classification in [type_classification, role_classification] {
+    for classification in [
+        type_classification,
+        role_classification,
+        phase_classification,
+    ] {
         if local_session_classification_is_rejected(classification) {
             return classification;
         }
@@ -1436,6 +1449,16 @@ fn local_session_record_classification(
         || matches!(role_classification, LocalSessionRecordClassification::Tool)
     {
         return LocalSessionRecordClassification::Tool;
+    }
+    if phase_classification != LocalSessionRecordClassification::Missing {
+        if type_classification == LocalSessionRecordClassification::User
+            || role_classification == LocalSessionRecordClassification::User
+            || (type_classification == LocalSessionRecordClassification::Thinking
+                && phase_classification != LocalSessionRecordClassification::Thinking)
+        {
+            return LocalSessionRecordClassification::Unproven;
+        }
+        return phase_classification;
     }
     if matches!(
         type_classification,
@@ -1575,6 +1598,7 @@ fn raw_classification_token_overflow_ranges(bytes: &[u8]) -> Option<Vec<(usize, 
 enum RawClassificationKey {
     Type,
     Role,
+    Phase,
     Other,
 }
 
@@ -1618,6 +1642,7 @@ fn scan_raw_json_object(
     *cursor += 1;
     let mut final_type_overflow = None;
     let mut final_role_overflow = None;
+    let mut final_phase_overflow = None;
     skip_raw_json_whitespace(bytes, cursor);
     if bytes.get(*cursor) == Some(&b'}') {
         *cursor += 1;
@@ -1637,6 +1662,7 @@ fn scan_raw_json_object(
             .map_or(RawClassificationKey::Other, |key| match key.as_str() {
                 "type" => RawClassificationKey::Type,
                 "role" => RawClassificationKey::Role,
+                "phase" => RawClassificationKey::Phase,
                 _ => RawClassificationKey::Other,
             });
         *cursor = key_end + 1;
@@ -1655,6 +1681,7 @@ fn scan_raw_json_object(
             match classification_key {
                 RawClassificationKey::Type => final_type_overflow = overflow,
                 RawClassificationKey::Role => final_role_overflow = overflow,
+                RawClassificationKey::Phase => final_phase_overflow = overflow,
                 RawClassificationKey::Other => {}
             }
             *cursor = value_end;
@@ -1662,6 +1689,7 @@ fn scan_raw_json_object(
             match classification_key {
                 RawClassificationKey::Type => final_type_overflow = None,
                 RawClassificationKey::Role => final_role_overflow = None,
+                RawClassificationKey::Phase => final_phase_overflow = None,
                 RawClassificationKey::Other => {}
             }
             scan_raw_json_value(bytes, cursor, depth, ranges)?;
@@ -1677,6 +1705,7 @@ fn scan_raw_json_object(
                 *cursor += 1;
                 ranges.extend(final_type_overflow);
                 ranges.extend(final_role_overflow);
+                ranges.extend(final_phase_overflow);
                 return Some(());
             }
             _ => return None,
@@ -1799,6 +1828,12 @@ fn is_supported_local_session_scalar_key(key: &str) -> bool {
         key,
         "type"
             | "role"
+            | "phase"
+            | "finish"
+            | "finish_reason"
+            | "finishReason"
+            | "stop_reason"
+            | "stopReason"
             | "text"
             | "content"
             | "title"
@@ -2288,8 +2323,8 @@ fn malformed_json_shaped_record_is_denied(text: &str) -> bool {
                 if malformed_json_deny_label(&normalized_key) {
                     return true;
                 }
-                classification_key =
-                    matches!(normalized_key.as_str(), "type" | "role").then_some(normalized_key);
+                classification_key = matches!(normalized_key.as_str(), "type" | "role" | "phase")
+                    .then_some(normalized_key);
             }
             MalformedJsonLikeToken::Scalar(value) => {
                 if let Some(key) = classification_key.take() {
@@ -2328,6 +2363,7 @@ fn malformed_json_classification_value_is_denied(key: &str, value: &str) -> bool
     let classification = match key {
         "type" => local_session_type_name_classification(value),
         "role" => local_session_role_classification(value),
+        "phase" => local_session_phase_name_classification(value),
         _ => return false,
     };
     local_session_classification_is_rejected(classification)
@@ -2946,6 +2982,11 @@ fn enrich_local_session_content(
                     .as_ref()
                     .and_then(Value::as_object)
                     .and_then(json_session_role);
+                let inherited_finish = message_value
+                    .as_ref()
+                    .and_then(Value::as_object)
+                    .and_then(|message| message.get("finish"))
+                    .and_then(Value::as_str);
                 chunks.push(message);
                 if let Some(message_id) = message_id {
                     append_opencode_parts(
@@ -2953,6 +2994,7 @@ fn enrich_local_session_content(
                         guarded_root,
                         message_id,
                         inherited_role,
+                        inherited_finish,
                         &mut sidecar_state,
                         &mut chunks,
                     );
@@ -2982,6 +3024,7 @@ fn append_opencode_parts(
     guarded_root: &GuardedLocalSessionRoot,
     message_id: &str,
     inherited_role: Option<&str>,
+    inherited_finish: Option<&str>,
     state: &mut OpencodeSidecarReadState<'_>,
     chunks: &mut Vec<String>,
 ) {
@@ -3007,7 +3050,8 @@ fn append_opencode_parts(
         };
         let compacted =
             compact_local_session_records(&part, state.io.limits.max_line_fragment_bytes);
-        let attributed = opencode_part_with_inherited_role(&compacted, inherited_role);
+        let attributed =
+            opencode_part_with_inherited_message(&compacted, inherited_role, inherited_finish);
         let part = accepted_local_session_content(&attributed);
         if !part.is_empty() {
             chunks.push(part);
@@ -3044,24 +3088,27 @@ fn read_opencode_sidecar(
     ))
 }
 
-fn opencode_part_with_inherited_role(content: &str, inherited_role: Option<&str>) -> String {
-    let Some(inherited_role) = inherited_role else {
+fn opencode_part_with_inherited_message(
+    content: &str,
+    inherited_role: Option<&str>,
+    inherited_finish: Option<&str>,
+) -> String {
+    if inherited_role.is_none() && inherited_finish.is_none() {
         return content.to_string();
-    };
+    }
     let Ok(mut value) = serde_json::from_str::<Value>(content.trim()) else {
         return content.to_string();
     };
     let Some(map) = value.as_object_mut() else {
         return content.to_string();
     };
-    if local_session_role_evidence(map).classification != LocalSessionRecordClassification::Missing
-        || !map
-            .get("type")
-            .and_then(Value::as_str)
-            .map(|record_type| record_type.to_ascii_lowercase().replace(['_', '-'], ""))
-            .is_some_and(|record_type| {
-                matches!(record_type.as_str(), "text" | "inputtext" | "outputtext")
-            })
+    if !map
+        .get("type")
+        .and_then(Value::as_str)
+        .map(|record_type| record_type.to_ascii_lowercase().replace(['_', '-'], ""))
+        .is_some_and(|record_type| {
+            matches!(record_type.as_str(), "text" | "inputtext" | "outputtext")
+        })
     {
         return content.to_string();
     }
@@ -3071,10 +3118,23 @@ fn opencode_part_with_inherited_role(content: &str, inherited_role: Option<&str>
     {
         return content.to_string();
     }
-    map.insert(
-        "role".to_string(),
-        Value::String(inherited_role.to_string()),
-    );
+    if local_session_role_evidence(map).classification == LocalSessionRecordClassification::Missing
+    {
+        if let Some(inherited_role) = inherited_role {
+            map.insert(
+                "role".to_string(),
+                Value::String(inherited_role.to_string()),
+            );
+        }
+    }
+    if !map.contains_key("finish") {
+        if let Some(inherited_finish) = inherited_finish {
+            map.insert(
+                "finish".to_string(),
+                Value::String(inherited_finish.to_string()),
+            );
+        }
+    }
     let mut attributed = value.to_string();
     attributed.push('\n');
     attributed
@@ -4004,6 +4064,20 @@ fn collect_json_session_content_drafts(
             let direct_kind = json_session_content_kind(map, None);
             let direct_tool = direct_kind == Some("tool_call");
             let mut pushed_direct_tool = false;
+            if direct_kind != Some("thinking") {
+                if let Some(thinking) = json_thinking_payload_text(value) {
+                    if !thinking.trim().is_empty() {
+                        push_local_session_text_drafts(
+                            drafts,
+                            "thinking",
+                            json_fallback_session_title("thinking"),
+                            thinking,
+                            timestamp,
+                            Vec::new(),
+                        );
+                    }
+                }
+            }
             if let Some(kind) = direct_kind {
                 let text = json_session_text_for_kind(map, kind);
                 if let Some(text) = text {
@@ -4274,8 +4348,9 @@ fn collect_text_session_content_drafts(
         strip_session_line_prefix(line, &["tool:", "function:", "工具：", "工具:"])
     {
         ("tool_call", "Tool", text)
-    } else if is_tool_result_text(line)
-        || lower.contains("tool_call")
+    } else if is_tool_result_text(line) {
+        return;
+    } else if lower.contains("tool_call")
         || lower.contains("tool_use")
         || lower.contains("function_call")
     {
@@ -4409,12 +4484,6 @@ fn json_session_content_kind(
     if json_thinking_payload_text(&Value::Object(map.clone())).is_some() {
         return Some("thinking");
     }
-    if json_session_text(map)
-        .as_deref()
-        .is_some_and(is_tool_result_text)
-    {
-        return Some("tool_call");
-    }
     None
 }
 
@@ -4466,50 +4535,14 @@ fn json_session_text_for_kind(map: &serde_json::Map<String, Value>, kind: &str) 
         }
     }
 
-    for key in [
-        "content",
-        "text",
-        "message",
-        "delta",
-        "thinking",
-        "reasoning",
-        "summary",
-        "result",
-    ] {
+    for key in ["content", "text", "message", "delta", "summary", "result"] {
         if let Some(value) = map.get(key).and_then(json_non_tool_message_text) {
             if !value.trim().is_empty() {
                 return Some(value);
             }
         }
     }
-
-    json_session_text(map)
-        .filter(|text| !is_tool_result_text(text))
-        .filter(|_| !json_session_contains_tool_payload(map))
-}
-
-fn json_session_contains_tool_payload(map: &serde_json::Map<String, Value>) -> bool {
-    map.values().any(json_value_contains_tool_payload)
-}
-
-fn json_value_contains_tool_payload(value: &Value) -> bool {
-    match value {
-        Value::Array(items) => items.iter().any(json_value_contains_tool_payload),
-        Value::Object(map) => {
-            is_json_tool_object(map)
-                || [
-                    "tool_calls",
-                    "toolCalls",
-                    "tool_use",
-                    "toolUse",
-                    "function_call",
-                ]
-                .iter()
-                .any(|key| map.contains_key(*key))
-                || map.values().any(json_value_contains_tool_payload)
-        }
-        _ => false,
-    }
+    None
 }
 
 fn local_session_content_kind_for_text<'a>(
@@ -4518,63 +4551,12 @@ fn local_session_content_kind_for_text<'a>(
     map: &serde_json::Map<String, Value>,
 ) -> &'a str {
     if kind == "agent_reply"
-        && (json_session_has_tool_process_signal(map) || is_agent_process_note_text(text))
+        && (json_session_has_nonfinal_process_signal(map) || is_agent_process_note_text(text))
     {
         "thinking"
     } else {
         kind
     }
-}
-
-fn json_session_has_tool_process_signal(map: &serde_json::Map<String, Value>) -> bool {
-    map.values().any(json_value_has_tool_process_signal)
-}
-
-fn json_value_has_tool_process_signal(value: &Value) -> bool {
-    match value {
-        Value::Array(items) => items.iter().any(json_value_has_tool_process_signal),
-        Value::Object(map) => {
-            for key in [
-                "stop_reason",
-                "stopReason",
-                "finish_reason",
-                "finishReason",
-                "finish_details",
-                "finishDetails",
-            ] {
-                if let Some(value) = map.get(key) {
-                    if json_value_is_tool_process_signal(value) {
-                        return true;
-                    }
-                }
-            }
-            map.values().any(json_value_has_tool_process_signal)
-        }
-        _ => false,
-    }
-}
-
-fn json_value_is_tool_process_signal(value: &Value) -> bool {
-    match value {
-        Value::String(text) => is_tool_process_signal_text(text),
-        Value::Object(map) => map.values().any(json_value_is_tool_process_signal),
-        Value::Array(items) => items.iter().any(json_value_is_tool_process_signal),
-        _ => false,
-    }
-}
-
-fn is_tool_process_signal_text(value: &str) -> bool {
-    let normalized = value.to_ascii_lowercase().replace(['_', '-', ' '], "");
-    matches!(
-        normalized.as_str(),
-        "tool"
-            | "tooluse"
-            | "toolcall"
-            | "toolcalls"
-            | "functioncall"
-            | "functioncalls"
-            | "requiresaction"
-    )
 }
 
 fn is_agent_process_note_text(text: &str) -> bool {
@@ -4689,6 +4671,22 @@ fn json_non_tool_message_text(value: &Value) -> Option<String> {
             (!texts.is_empty()).then(|| texts.join("\n"))
         }
         Value::Object(map) => {
+            if let Some(record_type) = map.get("type").and_then(Value::as_str) {
+                let normalized = record_type.to_ascii_lowercase().replace(['_', '-'], "");
+                if is_json_thinking_type(&normalized) || is_json_tool_type(&normalized) {
+                    return None;
+                }
+                if matches!(normalized.as_str(), "text" | "inputtext" | "outputtext") {
+                    for key in ["text", "content", "message", "delta"] {
+                        if let Some(text) = map.get(key).and_then(json_non_tool_message_text) {
+                            if !text.trim().is_empty() {
+                                return Some(text);
+                            }
+                        }
+                    }
+                    return None;
+                }
+            }
             if is_json_tool_object(map) || json_session_blocks_plain_text_fallback(map) {
                 return None;
             }
@@ -4739,41 +4737,11 @@ fn is_json_tool_object(map: &serde_json::Map<String, Value>) -> bool {
         .any(|key| map.contains_key(*key))
 }
 
-fn is_json_thinking_type(normalized: &str) -> bool {
-    matches!(
-        normalized,
-        "thinking" | "thinkingtext" | "reasoning" | "reasoningtext" | "thought"
-    )
-}
-
-fn is_json_tool_type(normalized: &str) -> bool {
-    matches!(
-        normalized,
-        "tool"
-            | "toolcall"
-            | "tooluse"
-            | "functioncall"
-            | "toolresult"
-            | "tooluseresult"
-            | "tooluseerror"
-            | "functionresult"
-            | "customtoolcall"
-            | "customtoolcalloutput"
-    )
-}
-
 fn is_codex_session_wrapper(map: &serde_json::Map<String, Value>) -> bool {
     matches!(
         map.get("type").and_then(Value::as_str),
         Some("response_item" | "event_msg")
     ) && map.get("payload").is_some_and(Value::is_object)
-}
-
-fn is_json_non_message_type(normalized: &str) -> bool {
-    matches!(
-        normalized,
-        "developer" | "system" | "summary" | "compaction" | "context" | "metadata"
-    )
 }
 
 fn is_tool_result_text(text: &str) -> bool {
@@ -4869,6 +4837,12 @@ fn is_json_session_structure_key(key: &str) -> bool {
             | "role"
             | "sender"
             | "author"
+            | "phase"
+            | "finish"
+            | "finish_reason"
+            | "finishReason"
+            | "stop_reason"
+            | "stopReason"
             | "id"
             | "name"
             | "title"

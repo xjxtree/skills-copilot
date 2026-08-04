@@ -26,6 +26,14 @@ This file describes security and privacy boundaries.
   confirmation.
 - Raw transcripts, prompts, responses, traces, credentials, screenshots, and
   reports must not persist secrets.
+- Task Preflight task text and provider draft output are session-only. Its
+  persisted prompt-run row contains diagnostic metadata without those fields;
+  service startup also removes them from legacy Task Preflight rows without
+  changing unrelated prompt-run content.
+- Task Preflight confirmation exposes a redacted request summary plus
+  destination and token/cost estimates. The complete redacted request and
+  complete untrusted response are available only from current-session memory
+  after a send attempt, are copy-only, and disappear when the app exits.
 - Session preview data is redacted and bounded before it crosses the service
   boundary.
 - Native file watching is limited to the Rust-provided bounded authorization
@@ -76,6 +84,14 @@ This file describes security and privacy boundaries.
   file types, counts, and expanded sizes; apply is bound to both ZIP and current
   source digests and uses staged replacement with rollback. Imported scripts
   remain data and are never run.
+- Direct local-folder installation is a separate manager path, not a ZIP
+  import. Inspection accepts one absolute non-symlink directory, rejects
+  nested symlinks, special files, duplicate skill names, and bounded-tree
+  overflow, then invokes only the manager's network-free `--list --full-depth`
+  operation. It does not copy or execute source content. A later install uses
+  the ordinary explicit command preview and confirmation, with the complete
+  source digest bound into the preview token so changed content cannot inherit
+  an earlier confirmation.
 - Catalog discovery never grants package-manager write authority: plugin
   caches, configured read-only roots, and native roots outside the guarded
   selected `.agents/skills` roots are excluded from editable inventory.

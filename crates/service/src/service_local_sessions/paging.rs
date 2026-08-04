@@ -107,6 +107,7 @@ impl ServiceHost {
             .map(|text| decode_cursor(text, METHOD, &query_digest))
             .transpose()?;
         let mut roots = Vec::<KeysetLocalSessionRoot>::new();
+        let mut blocked_root_rows = Vec::<LocalSessionPreviewRoot>::new();
         let mut candidates = Vec::<KeysetLocalSessionCandidate>::new();
         let mut candidate_set_was_truncated = false;
         for root_request in root_requests {
@@ -118,20 +119,29 @@ impl ServiceHost {
             } = root_request;
             let redacted_root = redactor.redact(&path.to_string_lossy());
             if !path.is_absolute() {
-                blocker_notes.push(format!(
-                    "{redacted_root}: Authorized session roots must be absolute paths."
-                ));
+                let blocker = "Authorized session roots must be absolute paths.".to_string();
+                blocker_notes.push(format!("{redacted_root}: {blocker}"));
+                blocked_root_rows.push(LocalSessionPreviewRoot {
+                    root: redacted_root,
+                    status: "blocked".to_string(),
+                    candidate_count: 0,
+                    blocker: Some(blocker),
+                });
                 continue;
             }
             let guarded_root = match guarded_root {
                 Ok(root) => root,
                 Err(error) => {
-                    blocker_notes.push(format!(
-                        "{redacted_root}: {}",
-                        redactor.redact(&format!(
-                            "Authorized session root could not be opened safely: {error}"
-                        ))
+                    let blocker = redactor.redact(&format!(
+                        "Authorized session root could not be opened safely: {error}"
                     ));
+                    blocker_notes.push(format!("{redacted_root}: {blocker}"));
+                    blocked_root_rows.push(LocalSessionPreviewRoot {
+                        root: redacted_root,
+                        status: "blocked".to_string(),
+                        candidate_count: 0,
+                        blocker: Some(blocker),
+                    });
                     continue;
                 }
             };
@@ -316,14 +326,20 @@ impl ServiceHost {
                     .to_string(),
             );
         }
-        let source_completeness = if candidate_set_was_truncated {
+        let has_unreadable_source = !blocker_notes.is_empty();
+        let source_completeness = if candidate_set_was_truncated || has_unreadable_source {
             ListSourceCompleteness::Limited
         } else {
             ListSourceCompleteness::Enumerable
         };
-        let incomplete_reason =
-            candidate_set_was_truncated.then_some(ListIncompleteReason::SafetyBudget);
-        let root_rows = roots
+        let incomplete_reason = if candidate_set_was_truncated {
+            Some(ListIncompleteReason::SafetyBudget)
+        } else if has_unreadable_source {
+            Some(ListIncompleteReason::UnreadableSource)
+        } else {
+            None
+        };
+        let mut root_rows = roots
             .into_iter()
             .map(|root| LocalSessionPreviewRoot {
                 root: root.redacted_root,
@@ -332,9 +348,12 @@ impl ServiceHost {
                 blocker: None,
             })
             .collect::<Vec<_>>();
+        root_rows.extend(blocked_root_rows);
         Ok(LocalSessionPreviewResult {
             generated_by: "local-v2.98",
-            authorized: !root_rows.is_empty(),
+            authorized: root_rows.iter().any(|root| {
+                root.status == "authorized-read-only" || root.status == "auto-discovered-read-only"
+            }),
             authorization_required: false,
             roots: root_rows,
             count,

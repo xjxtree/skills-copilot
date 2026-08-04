@@ -147,6 +147,7 @@ struct SqliteMessage {
 pub(super) fn preview_sqlite_sessions(
     ctx: &AdapterContext,
     params: &LocalSessionPreviewParams,
+    io: &mut LocalSessionIoContext,
     requested_agent: Option<&str>,
     scope: LocalSessionScope,
     sort: LocalSessionSort,
@@ -166,6 +167,7 @@ pub(super) fn preview_sqlite_sessions(
             return preview_codex_state_sessions(
                 ctx,
                 params,
+                io,
                 scope,
                 sort,
                 direction,
@@ -372,6 +374,7 @@ struct CodexIndexedSession {
 fn preview_codex_state_sessions(
     ctx: &AdapterContext,
     params: &LocalSessionPreviewParams,
+    io: &mut LocalSessionIoContext,
     scope: LocalSessionScope,
     sort: LocalSessionSort,
     direction: SortDirection,
@@ -400,6 +403,16 @@ fn preview_codex_state_sessions(
     for session in &mut sessions {
         if let Some(title) = display_titles.get(&session.native_id) {
             session.title = title.clone();
+        }
+    }
+    let codex_home = codex_home_dir(ctx);
+    let codex_home = codex_home.canonicalize().unwrap_or(codex_home);
+    for session in &mut sessions {
+        if let Some(title) = codex_session_index_title(io, &codex_home, &session.native_id) {
+            // Codex appends explicit title changes to session_index.jsonl. It
+            // is the same source used by exact detail reads, so it must win
+            // over the state/catalog snapshot during a manual refresh.
+            session.title = title;
         }
     }
     if scope == LocalSessionScope::Project {
@@ -753,7 +766,23 @@ pub(super) fn list_sqlite_session_messages(
         .as_ref()
         .and_then(|cursor| usize::try_from(cursor.sort_value).ok())
         .unwrap_or(0);
-    let scan = load_final_message_page(&connection, agent, &session.native_id, start, limit)?;
+    let initial_projection_index = cursor
+        .as_ref()
+        .and_then(|cursor| cursor.accepted_count)
+        .unwrap_or(0);
+    let accepted_before = cursor
+        .as_ref()
+        .and_then(|cursor| cursor.resolved_start_at)
+        .and_then(|value| usize::try_from(value).ok())
+        .unwrap_or(0);
+    let scan = load_paged_message_page(
+        &connection,
+        agent,
+        &session.native_id,
+        start,
+        initial_projection_index,
+        limit,
+    )?;
     if start > scan.total_rows {
         return Err(ServiceError::InvalidRequest(
             "message cursor is outside the selected SQLite session".to_string(),
@@ -764,9 +793,12 @@ pub(super) fn list_sqlite_session_messages(
         .messages
         .iter()
         .enumerate()
-        .map(|(index, message)| sqlite_content_item(message, start + index, &mut redactor))
+        .map(|(index, message)| {
+            sqlite_content_item(message, accepted_before + index, &mut redactor)
+        })
         .collect::<Vec<_>>();
-    let has_more = scan.next_row < scan.total_rows;
+    let accepted_through = accepted_before.saturating_add(items.len());
+    let has_more = scan.next_row < scan.total_rows || scan.next_projection_index > 0;
     let next_cursor = has_more
         .then(|| {
             encode_cursor(&KeysetCursor {
@@ -779,15 +811,11 @@ pub(super) fn list_sqlite_session_messages(
                 })?,
                 stable_id: session.service_id.clone(),
                 tie_breaker_digest: None,
-                accepted_count: Some(
-                    cursor
-                        .as_ref()
-                        .and_then(|cursor| cursor.accepted_count)
-                        .unwrap_or_default()
-                        .saturating_add(items.len()),
-                ),
+                accepted_count: Some(scan.next_projection_index),
                 processed_prefix_digest: None,
-                resolved_start_at: None,
+                resolved_start_at: Some(i64::try_from(accepted_through).map_err(|_| {
+                    ServiceError::InvalidRequest("SQLite message count overflow".to_string())
+                })?),
                 resolved_end_at: Some(i64::try_from(scan.total_rows).unwrap_or(i64::MAX)),
             })
         })
@@ -798,13 +826,7 @@ pub(super) fn list_sqlite_session_messages(
         session_id: session.service_id.clone(),
         content_items: items,
         returned_count,
-        total_count: (!has_more).then_some(
-            cursor
-                .as_ref()
-                .and_then(|cursor| cursor.accepted_count)
-                .unwrap_or_default()
-                .saturating_add(returned_count),
-        ),
+        total_count: (!has_more).then_some(accepted_through),
         has_more,
         next_cursor,
         source_revision,
@@ -905,45 +927,102 @@ fn load_messages(
 struct SqliteMessagePageScan {
     messages: Vec<SqliteMessage>,
     next_row: usize,
+    next_projection_index: usize,
     total_rows: usize,
 }
 
-fn load_final_message_page(
+fn load_paged_message_page(
     connection: &Connection,
     agent: SqliteAgent,
     session_id: &str,
     start_row: usize,
+    initial_projection_index: usize,
     limit: usize,
 ) -> Result<SqliteMessagePageScan, ServiceError> {
     let total_rows = sqlite_message_row_count(connection, agent, session_id)?;
-    let mut next_row = start_row.min(total_rows);
+    if start_row > total_rows || (start_row == total_rows && initial_projection_index != 0) {
+        return Err(ServiceError::InvalidRequest(
+            "message cursor is outside the selected SQLite session".to_string(),
+        ));
+    }
+    let mut next_row = start_row;
     let mut messages = Vec::with_capacity(limit);
-    while next_row < total_rows && messages.len() < limit {
-        let remaining = total_rows.saturating_sub(next_row);
-        let raw_limit = SQLITE_MESSAGE_SCAN_ROWS.min(remaining);
-        let rows = load_message_rows(connection, agent, session_id, next_row, raw_limit)?;
-        if rows.is_empty() {
-            next_row = total_rows;
-            break;
+    let remaining = total_rows.saturating_sub(next_row);
+    let raw_limit = SQLITE_MESSAGE_SCAN_ROWS.min(remaining);
+    let rows = load_message_projection_rows(connection, agent, session_id, next_row, raw_limit)?;
+    for (relative_row, projections) in rows.into_iter().enumerate() {
+        let row_index = start_row.saturating_add(relative_row);
+        let projection_start = if relative_row == 0 {
+            initial_projection_index
+        } else {
+            0
+        };
+        if projection_start > projections.len() {
+            return Err(ServiceError::InvalidRequest(
+                "message cursor projection is outside the selected SQLite row".to_string(),
+            ));
         }
-        for message in rows {
-            next_row = next_row.saturating_add(1);
-            if matches!(message.kind.as_str(), "user_message" | "agent_reply") {
-                messages.push(message);
-                if messages.len() == limit {
-                    break;
+        let projection_count = projections.len();
+        for (projection_index, message) in
+            projections.into_iter().enumerate().skip(projection_start)
+        {
+            if !matches!(
+                message.kind.as_str(),
+                "user_message" | "agent_reply" | "thinking" | "tool_call" | "skill_call"
+            ) || (message.text.trim().is_empty() && message.kind != "tool_call")
+            {
+                continue;
+            }
+            messages.push(message);
+            if messages.len() == limit {
+                let next_projection_index = projection_index.saturating_add(1);
+                if next_projection_index < projection_count {
+                    return Ok(SqliteMessagePageScan {
+                        messages,
+                        next_row: row_index,
+                        next_projection_index,
+                        total_rows,
+                    });
                 }
+                return Ok(SqliteMessagePageScan {
+                    messages,
+                    next_row: row_index.saturating_add(1),
+                    next_projection_index: 0,
+                    total_rows,
+                });
             }
         }
-        if messages.len() < limit {
-            break;
-        }
+        next_row = row_index.saturating_add(1);
     }
     Ok(SqliteMessagePageScan {
         messages,
         next_row,
+        next_projection_index: 0,
         total_rows,
     })
+}
+
+fn load_message_projection_rows(
+    connection: &Connection,
+    agent: SqliteAgent,
+    session_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<Vec<SqliteMessage>>, ServiceError> {
+    match agent {
+        SqliteAgent::Opencode => load_opencode_message_rows(connection, session_id, offset, limit)
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|message| sqlite_messages_with_skill_invocations(vec![message]))
+                    .collect()
+            }),
+        SqliteAgent::Hermes => {
+            load_hermes_message_projection_rows(connection, session_id, offset, limit)
+        }
+        SqliteAgent::Openclaw => {
+            load_openclaw_message_projection_rows(connection, session_id, offset, limit)
+        }
+    }
 }
 
 fn sqlite_message_row_count(
@@ -962,20 +1041,6 @@ fn sqlite_message_row_count(
         .query_row(sql, [session_id], |row| row.get::<_, i64>(0))
         .map_err(sqlite_schema_error)?;
     Ok(count.max(0) as usize)
-}
-
-fn load_message_rows(
-    connection: &Connection,
-    agent: SqliteAgent,
-    session_id: &str,
-    offset: usize,
-    limit: usize,
-) -> Result<Vec<SqliteMessage>, ServiceError> {
-    match agent {
-        SqliteAgent::Opencode => load_opencode_message_rows(connection, session_id, offset, limit),
-        SqliteAgent::Hermes => load_hermes_message_rows(connection, session_id, offset, limit),
-        SqliteAgent::Openclaw => load_openclaw_message_rows(connection, session_id, offset, limit),
-    }
 }
 
 fn load_openclaw_message_rows(
@@ -1000,6 +1065,46 @@ fn load_openclaw_message_rows(
 }
 
 fn openclaw_message_from_json(event_json: &str, timestamp: Option<i64>) -> SqliteMessage {
+    let (role, projection) = openclaw_event_projection(event_json);
+    let (kind, text) = if role == "user" && !projection.visible_text.is_empty() {
+        ("user_message", projection.visible_text)
+    } else if role == "assistant" && !projection.visible_text.is_empty() && !projection.has_tool {
+        ("agent_reply", projection.visible_text)
+    } else if role == "assistant"
+        && (!projection.visible_text.is_empty() || !projection.thinking_text.is_empty())
+    {
+        (
+            "thinking",
+            [projection.thinking_text, projection.visible_text]
+                .into_iter()
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        )
+    } else if !projection.thinking_text.is_empty() {
+        ("thinking", projection.thinking_text)
+    } else if projection.has_tool {
+        ("tool_call", projection.tool_text)
+    } else {
+        ("ignored", String::new())
+    };
+    SqliteMessage {
+        role,
+        text,
+        timestamp,
+        kind: kind.to_string(),
+    }
+}
+
+#[derive(Default)]
+struct OpenclawContentProjection {
+    visible_text: String,
+    thinking_text: String,
+    tool_text: String,
+    has_tool: bool,
+}
+
+fn openclaw_event_projection(event_json: &str) -> (String, OpenclawContentProjection) {
     let event = serde_json::from_str::<serde_json::Value>(event_json).unwrap_or_default();
     let payload = event
         .get("message")
@@ -1019,61 +1124,65 @@ fn openclaw_message_from_json(event_json: &str, timestamp: Option<i64>) -> Sqlit
         .get("content")
         .or_else(|| payload.get("text"))
         .or_else(|| event.get("content"));
-    let (text, has_tool, has_thinking) = openclaw_content_projection(content);
-    let kind = if role == "user" && !text.is_empty() {
-        "user_message"
-    } else if role == "assistant" && !text.is_empty() {
-        "agent_reply"
-    } else if has_thinking {
-        "thinking"
-    } else if has_tool {
-        "tool_call"
-    } else {
-        "ignored"
-    };
-    SqliteMessage {
-        role,
-        text,
-        timestamp,
-        kind: kind.to_string(),
-    }
+    (role, openclaw_content_projection(content))
 }
 
-fn openclaw_content_projection(content: Option<&serde_json::Value>) -> (String, bool, bool) {
+fn openclaw_content_projection(content: Option<&serde_json::Value>) -> OpenclawContentProjection {
     let Some(content) = content else {
-        return (String::new(), false, false);
+        return OpenclawContentProjection::default();
     };
     match content {
-        serde_json::Value::String(text) => (text.clone(), false, false),
+        serde_json::Value::String(text) => OpenclawContentProjection {
+            visible_text: text.clone(),
+            ..OpenclawContentProjection::default()
+        },
         serde_json::Value::Array(items) => {
-            let mut text = Vec::new();
-            let mut has_tool = false;
-            let mut has_thinking = false;
+            let mut visible_text = Vec::new();
+            let mut thinking_text = Vec::new();
+            let mut tool_text = Vec::new();
             for item in items {
                 let kind = item
                     .get("type")
                     .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default();
-                has_tool |= matches!(
-                    kind,
-                    "tool" | "tool_call" | "toolCall" | "tool_use" | "toolUse"
-                );
-                has_thinking |= matches!(kind, "thinking" | "reasoning");
-                if matches!(kind, "text" | "output_text" | "thinking" | "reasoning") {
-                    if let Some(value) = item
-                        .get("text")
-                        .or_else(|| item.get("content"))
+                    .unwrap_or_default()
+                    .to_ascii_lowercase()
+                    .replace(['_', '-'], "");
+                if is_json_tool_result_type(&kind) {
+                    continue;
+                }
+                if is_json_tool_type(&kind) {
+                    let label = item
+                        .get("name")
+                        .or_else(|| item.get("tool"))
                         .and_then(serde_json::Value::as_str)
-                    {
-                        if !value.is_empty() {
-                            text.push(value);
-                        }
+                        .unwrap_or("Tool call");
+                    let detail = json_tool_payload_text(item)
+                        .filter(|value| !value.trim().is_empty())
+                        .unwrap_or_else(|| label.to_string());
+                    if !detail.is_empty() {
+                        tool_text.push(detail);
                     }
+                    continue;
+                }
+                let value = item
+                    .get("text")
+                    .or_else(|| item.get("content"))
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|value| !value.is_empty());
+                if matches!(kind.as_str(), "thinking" | "reasoning" | "analysis") {
+                    thinking_text.extend(value);
+                } else if matches!(kind.as_str(), "text" | "outputtext") {
+                    visible_text.extend(value);
                 }
             }
-            (text.join("\n"), has_tool, has_thinking)
+            OpenclawContentProjection {
+                visible_text: visible_text.join("\n"),
+                thinking_text: thinking_text.join("\n"),
+                tool_text: tool_text.join("\n"),
+                has_tool: !tool_text.is_empty(),
+            }
         }
-        _ => (String::new(), false, false),
+        _ => OpenclawContentProjection::default(),
     }
 }
 
@@ -1084,7 +1193,7 @@ fn load_opencode_message_rows(
     limit: usize,
 ) -> Result<Vec<SqliteMessage>, ServiceError> {
     let mut statement = connection
-        .prepare("SELECT m.data, p.data, p.time_created FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1 ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC LIMIT ?2 OFFSET ?3")
+        .prepare("SELECT m.data, p.data, p.time_created, EXISTS(SELECT 1 FROM part tool_part WHERE tool_part.message_id = m.id AND json_extract(tool_part.data, '$.type') = 'tool') FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1 ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC LIMIT ?2 OFFSET ?3")
         .map_err(sqlite_schema_error)?;
     let rows = statement
         .query_map((session_id, limit as i64, offset as i64), |row| {
@@ -1092,15 +1201,17 @@ fn load_opencode_message_rows(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })
         .map_err(sqlite_schema_error)?;
     rows.map(|row| {
-        let (message_json, part_json, timestamp) = row.map_err(sqlite_schema_error)?;
+        let (message_json, part_json, timestamp, has_tool) = row.map_err(sqlite_schema_error)?;
         Ok(opencode_message_from_json(
             &message_json,
             &part_json,
             timestamp,
+            has_tool,
         ))
     })
     .collect()
@@ -1110,6 +1221,7 @@ fn opencode_message_from_json(
     message_json: &str,
     part_json: &str,
     timestamp: i64,
+    has_tool: bool,
 ) -> SqliteMessage {
     let message = serde_json::from_str::<serde_json::Value>(message_json).unwrap_or_default();
     let part = serde_json::from_str::<serde_json::Value>(part_json).unwrap_or_default();
@@ -1121,12 +1233,30 @@ fn opencode_message_from_json(
         .get("type")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
-    let text = part
+    let ordinary_text = part
         .get("text")
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default();
+    let text = if part_type == "tool" {
+        json_tool_payload_text(&part)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| json_tool_title(&part))
+    } else {
+        ordinary_text.to_string()
+    };
+    let finish = message
+        .get("finish")
+        .and_then(serde_json::Value::as_str)
+        .map(|value| value.to_ascii_lowercase().replace(['_', '-', ' '], ""));
     let kind = match (role, part_type) {
         ("user", "text") if !text.is_empty() => "user_message",
+        ("assistant", "text")
+            if !text.is_empty()
+                && (finish.as_deref().is_some_and(|finish| finish != "stop")
+                    || (finish.is_none() && has_tool)) =>
+        {
+            "thinking"
+        }
         ("assistant", "text") if !text.is_empty() => "agent_reply",
         (_, "reasoning") if !text.is_empty() => "thinking",
         (_, "tool") => "tool_call",
@@ -1134,18 +1264,18 @@ fn opencode_message_from_json(
     };
     SqliteMessage {
         role: role.to_string(),
-        text: text.to_string(),
+        text,
         timestamp: Some(timestamp),
         kind: kind.to_string(),
     }
 }
 
-fn load_hermes_message_rows(
+fn load_hermes_message_projection_rows(
     connection: &Connection,
     session_id: &str,
     offset: usize,
     limit: usize,
-) -> Result<Vec<SqliteMessage>, ServiceError> {
+) -> Result<Vec<Vec<SqliteMessage>>, ServiceError> {
     let mut statement = connection
         .prepare("SELECT role, COALESCE(content, ''), CAST(timestamp * 1000 AS INTEGER), COALESCE(tool_name, ''), COALESCE(tool_calls, ''), COALESCE(reasoning, '') FROM messages WHERE session_id = ?1 ORDER BY timestamp ASC, id ASC LIMIT ?2 OFFSET ?3")
         .map_err(sqlite_schema_error)?;
@@ -1164,25 +1294,125 @@ fn load_hermes_message_rows(
     rows.map(|row| {
         let (role, content, timestamp, tool_name, tool_calls, reasoning) =
             row.map_err(sqlite_schema_error)?;
-        let (kind, text) = if role == "user" && !content.is_empty() {
-            ("user_message", content)
-        } else if role == "assistant" && !content.is_empty() {
-            ("agent_reply", content)
-        } else if !reasoning.is_empty() {
-            ("thinking", reasoning)
-        } else if !tool_name.is_empty() || !tool_calls.is_empty() {
-            ("tool_call", tool_name)
-        } else {
-            ("ignored", String::new())
-        };
-        Ok(SqliteMessage {
-            role,
-            text,
-            timestamp: Some(timestamp),
-            kind: kind.to_string(),
-        })
+        let has_tool = !tool_name.is_empty() || !tool_calls.is_empty();
+        let mut projected = Vec::new();
+        if role == "user" && !content.is_empty() {
+            projected.push(SqliteMessage {
+                role: role.clone(),
+                text: content,
+                timestamp: Some(timestamp),
+                kind: "user_message".to_string(),
+            });
+        } else if role == "assistant" {
+            if !reasoning.is_empty() {
+                projected.push(SqliteMessage {
+                    role: role.clone(),
+                    text: reasoning,
+                    timestamp: Some(timestamp),
+                    kind: "thinking".to_string(),
+                });
+            }
+            if !content.is_empty() {
+                projected.push(SqliteMessage {
+                    role: role.clone(),
+                    text: content,
+                    timestamp: Some(timestamp),
+                    kind: if has_tool { "thinking" } else { "agent_reply" }.to_string(),
+                });
+            }
+            if has_tool {
+                projected.push(SqliteMessage {
+                    role: role.clone(),
+                    text: if !tool_calls.is_empty() {
+                        tool_calls
+                    } else {
+                        tool_name
+                    },
+                    timestamp: Some(timestamp),
+                    kind: "tool_call".to_string(),
+                });
+            }
+        }
+        Ok(sqlite_messages_with_skill_invocations(projected))
     })
     .collect()
+}
+
+fn load_openclaw_message_projection_rows(
+    connection: &Connection,
+    session_id: &str,
+    offset: usize,
+    limit: usize,
+) -> Result<Vec<Vec<SqliteMessage>>, ServiceError> {
+    let mut statement = connection
+        .prepare("SELECT event_json, created_at FROM transcript_events WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2 OFFSET ?3")
+        .map_err(sqlite_schema_error)?;
+    let rows = statement
+        .query_map((session_id, limit as i64, offset as i64), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        })
+        .map_err(sqlite_schema_error)?;
+    rows.map(|row| {
+        let (event_json, timestamp) = row.map_err(sqlite_schema_error)?;
+        let (role, projection) = openclaw_event_projection(&event_json);
+        let mut messages = Vec::new();
+        if !projection.thinking_text.is_empty() {
+            messages.push(SqliteMessage {
+                role: role.clone(),
+                text: projection.thinking_text,
+                timestamp,
+                kind: "thinking".to_string(),
+            });
+        }
+        if !projection.visible_text.is_empty() {
+            let kind = if role == "user" {
+                "user_message"
+            } else if role == "assistant" && projection.has_tool {
+                "thinking"
+            } else if role == "assistant" {
+                "agent_reply"
+            } else {
+                "ignored"
+            };
+            messages.push(SqliteMessage {
+                role: role.clone(),
+                text: projection.visible_text,
+                timestamp,
+                kind: kind.to_string(),
+            });
+        }
+        if projection.has_tool {
+            messages.push(SqliteMessage {
+                role,
+                text: projection.tool_text,
+                timestamp,
+                kind: "tool_call".to_string(),
+            });
+        }
+        Ok(sqlite_messages_with_skill_invocations(messages))
+    })
+    .collect()
+}
+
+fn sqlite_messages_with_skill_invocations(messages: Vec<SqliteMessage>) -> Vec<SqliteMessage> {
+    let mut projected = Vec::new();
+    for message in messages {
+        let skill_names = if message.kind == "skill_call" {
+            Vec::new()
+        } else {
+            extract_skill_invocation_names(&message.text)
+        };
+        let role = message.role.clone();
+        let timestamp = message.timestamp;
+        projected.push(message);
+        projected.extend(skill_names.into_iter().map(|name| SqliteMessage {
+            role: role.clone(),
+            text: name,
+            timestamp,
+            kind: "skill_call".to_string(),
+        }));
+    }
+    projected
 }
 
 fn load_opencode_messages(
@@ -1190,7 +1420,7 @@ fn load_opencode_messages(
     session_id: &str,
 ) -> Result<Vec<SqliteMessage>, ServiceError> {
     let mut statement = connection
-        .prepare("SELECT m.data, p.data, p.time_created FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1 ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC LIMIT ?2")
+        .prepare("SELECT m.data, p.data, p.time_created, EXISTS(SELECT 1 FROM part tool_part WHERE tool_part.message_id = m.id AND json_extract(tool_part.data, '$.type') = 'tool') FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1 ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC LIMIT ?2")
         .map_err(sqlite_schema_error)?;
     let rows = statement
         .query_map((session_id, MAX_SQLITE_PREVIEW_MESSAGES as i64), |row| {
@@ -1198,14 +1428,15 @@ fn load_opencode_messages(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, i64>(2)?,
+                row.get::<_, bool>(3)?,
             ))
         })
         .map_err(sqlite_schema_error)?;
     let mut messages = Vec::new();
     let mut retained_bytes = 0usize;
     for row in rows {
-        let (message_json, part_json, timestamp) = row.map_err(sqlite_schema_error)?;
-        let message = opencode_message_from_json(&message_json, &part_json, timestamp);
+        let (message_json, part_json, timestamp, has_tool) = row.map_err(sqlite_schema_error)?;
+        let message = opencode_message_from_json(&message_json, &part_json, timestamp, has_tool);
         let role = message.role;
         let text = message.text;
         let kind = message.kind;
@@ -1253,27 +1484,40 @@ fn load_hermes_messages(
     for row in rows {
         let (role, content, timestamp, tool_name, tool_calls, reasoning) =
             row.map_err(sqlite_schema_error)?;
-        let (kind, text) = if role == "user" && !content.is_empty() {
-            ("user_message", content)
-        } else if role == "assistant" && !content.is_empty() {
-            ("agent_reply", content)
-        } else if !reasoning.is_empty() {
-            ("thinking", reasoning)
-        } else if !tool_name.is_empty() || !tool_calls.is_empty() {
-            ("tool_call", tool_name)
-        } else {
-            continue;
-        };
-        retained_bytes = retained_bytes.saturating_add(text.len());
-        if retained_bytes > MAX_SQLITE_TEXT_BYTES {
-            break;
+        let has_tool = !tool_name.is_empty() || !tool_calls.is_empty();
+        let mut projected = Vec::new();
+        if role == "user" && !content.is_empty() {
+            projected.push(("user_message", content));
+        } else if role == "assistant" {
+            if !reasoning.is_empty() {
+                projected.push(("thinking", reasoning));
+            }
+            if !content.is_empty() {
+                projected.push((if has_tool { "thinking" } else { "agent_reply" }, content));
+            }
+            if has_tool {
+                projected.push((
+                    "tool_call",
+                    if tool_name.is_empty() {
+                        "Tool call".to_string()
+                    } else {
+                        tool_name
+                    },
+                ));
+            }
         }
-        messages.push(SqliteMessage {
-            role,
-            text,
-            timestamp: Some(timestamp),
-            kind: kind.to_string(),
-        });
+        for (kind, text) in projected {
+            retained_bytes = retained_bytes.saturating_add(text.len());
+            if retained_bytes > MAX_SQLITE_TEXT_BYTES {
+                return Ok(messages);
+            }
+            messages.push(SqliteMessage {
+                role: role.clone(),
+                text,
+                timestamp: Some(timestamp),
+                kind: kind.to_string(),
+            });
+        }
     }
     Ok(messages)
 }
@@ -1282,18 +1526,64 @@ fn load_openclaw_messages(
     connection: &Connection,
     session_id: &str,
 ) -> Result<Vec<SqliteMessage>, ServiceError> {
-    let rows = load_openclaw_message_rows(connection, session_id, 0, MAX_SQLITE_PREVIEW_MESSAGES)?;
+    let mut statement = connection
+        .prepare("SELECT event_json, created_at FROM transcript_events WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2")
+        .map_err(sqlite_schema_error)?;
+    let rows = statement
+        .query_map((session_id, MAX_SQLITE_PREVIEW_MESSAGES as i64), |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?))
+        })
+        .map_err(sqlite_schema_error)?;
     let mut messages = Vec::new();
     let mut retained_bytes = 0usize;
-    for message in rows {
-        if message.kind == "ignored" || (message.text.is_empty() && message.kind != "tool_call") {
-            continue;
+    for row in rows {
+        let (event_json, timestamp) = row.map_err(sqlite_schema_error)?;
+        let (role, projection) = openclaw_event_projection(&event_json);
+        let mut projected = Vec::new();
+        if !projection.thinking_text.is_empty() {
+            projected.push(SqliteMessage {
+                role: role.clone(),
+                text: projection.thinking_text,
+                timestamp,
+                kind: "thinking".to_string(),
+            });
         }
-        retained_bytes = retained_bytes.saturating_add(message.text.len());
-        if retained_bytes > MAX_SQLITE_TEXT_BYTES {
-            break;
+        if !projection.visible_text.is_empty() {
+            let kind = if role == "user" {
+                "user_message"
+            } else if role == "assistant" && projection.has_tool {
+                "thinking"
+            } else if role == "assistant" {
+                "agent_reply"
+            } else {
+                "ignored"
+            };
+            projected.push(SqliteMessage {
+                role: role.clone(),
+                text: projection.visible_text,
+                timestamp,
+                kind: kind.to_string(),
+            });
         }
-        messages.push(message);
+        if projection.has_tool {
+            projected.push(SqliteMessage {
+                role: role.clone(),
+                text: projection.tool_text,
+                timestamp,
+                kind: "tool_call".to_string(),
+            });
+        }
+        for message in projected {
+            if message.kind == "ignored" || (message.text.is_empty() && message.kind != "tool_call")
+            {
+                continue;
+            }
+            retained_bytes = retained_bytes.saturating_add(message.text.len());
+            if retained_bytes > MAX_SQLITE_TEXT_BYTES {
+                return Ok(messages);
+            }
+            messages.push(message);
+        }
     }
     Ok(messages)
 }
@@ -1365,10 +1655,10 @@ fn sqlite_session_counts(
 ) -> Result<(usize, usize, usize, usize), ServiceError> {
     let sql = match agent {
         SqliteAgent::Opencode => {
-            "SELECT COUNT(DISTINCT CASE WHEN json_extract(m.data, '$.role') = 'user' AND json_extract(p.data, '$.type') = 'text' AND COALESCE(json_extract(p.data, '$.text'), '') <> '' THEN m.id END), COUNT(DISTINCT CASE WHEN json_extract(m.data, '$.role') = 'assistant' AND json_extract(p.data, '$.type') = 'text' AND COALESCE(json_extract(p.data, '$.text'), '') <> '' THEN m.id END), COUNT(DISTINCT m.id), SUM(CASE WHEN json_extract(p.data, '$.type') = 'tool' THEN 1 ELSE 0 END) FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1"
+            "SELECT COUNT(DISTINCT CASE WHEN json_extract(m.data, '$.role') = 'user' AND json_extract(p.data, '$.type') = 'text' AND COALESCE(json_extract(p.data, '$.text'), '') <> '' THEN m.id END), COUNT(DISTINCT CASE WHEN json_extract(m.data, '$.role') = 'assistant' AND json_extract(p.data, '$.type') = 'text' AND COALESCE(json_extract(p.data, '$.text'), '') <> '' AND (lower(replace(replace(json_extract(m.data, '$.finish'), '-', ''), '_', '')) = 'stop' OR (json_extract(m.data, '$.finish') IS NULL AND NOT EXISTS(SELECT 1 FROM part tool_part WHERE tool_part.message_id = m.id AND json_extract(tool_part.data, '$.type') = 'tool'))) THEN m.id END), COUNT(DISTINCT m.id), SUM(CASE WHEN json_extract(p.data, '$.type') = 'tool' THEN 1 ELSE 0 END) FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1"
         }
         SqliteAgent::Hermes => {
-            "SELECT SUM(CASE WHEN role = 'user' AND COALESCE(content, '') <> '' THEN 1 ELSE 0 END), SUM(CASE WHEN role = 'assistant' AND COALESCE(content, '') <> '' THEN 1 ELSE 0 END), COUNT(*), SUM(CASE WHEN COALESCE(tool_name, '') <> '' OR COALESCE(tool_calls, '') <> '' THEN 1 ELSE 0 END) FROM messages WHERE session_id = ?1"
+            "SELECT SUM(CASE WHEN role = 'user' AND COALESCE(content, '') <> '' THEN 1 ELSE 0 END), SUM(CASE WHEN role = 'assistant' AND COALESCE(content, '') <> '' AND COALESCE(tool_name, '') = '' AND COALESCE(tool_calls, '') = '' THEN 1 ELSE 0 END), COUNT(*), SUM(CASE WHEN COALESCE(tool_name, '') <> '' OR COALESCE(tool_calls, '') <> '' THEN 1 ELSE 0 END) FROM messages WHERE session_id = ?1"
         }
         SqliteAgent::Openclaw => {
             let messages = load_openclaw_messages(connection, session_id)?;
@@ -1413,7 +1703,7 @@ fn load_first_final_message(
     match agent {
         SqliteAgent::Opencode => {
             let mut statement = connection
-                .prepare("SELECT m.data, p.data, p.time_created FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1 AND json_extract(m.data, '$.role') IN ('user', 'assistant') AND json_extract(p.data, '$.type') = 'text' AND COALESCE(json_extract(p.data, '$.text'), '') <> '' ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC LIMIT 1")
+                .prepare("SELECT m.data, p.data, p.time_created FROM message m JOIN part p ON p.message_id = m.id WHERE m.session_id = ?1 AND json_extract(m.data, '$.role') IN ('user', 'assistant') AND json_extract(p.data, '$.type') = 'text' AND COALESCE(json_extract(p.data, '$.text'), '') <> '' AND (json_extract(m.data, '$.role') = 'user' OR lower(replace(replace(json_extract(m.data, '$.finish'), '-', ''), '_', '')) = 'stop' OR (json_extract(m.data, '$.finish') IS NULL AND NOT EXISTS(SELECT 1 FROM part tool_part WHERE tool_part.message_id = m.id AND json_extract(tool_part.data, '$.type') = 'tool'))) ORDER BY m.time_created ASC, p.time_created ASC, p.id ASC LIMIT 1")
                 .map_err(sqlite_schema_error)?;
             let mut rows = statement.query([session_id]).map_err(sqlite_schema_error)?;
             let Some(row) = rows.next().map_err(sqlite_schema_error)? else {
@@ -1426,11 +1716,12 @@ fn load_first_final_message(
                 &message_json,
                 &part_json,
                 timestamp,
+                false,
             )))
         }
         SqliteAgent::Hermes => {
             let mut statement = connection
-                .prepare("SELECT role, content, CAST(timestamp * 1000 AS INTEGER) FROM messages WHERE session_id = ?1 AND role IN ('user', 'assistant') AND COALESCE(content, '') <> '' ORDER BY timestamp ASC, id ASC LIMIT 1")
+                .prepare("SELECT role, content, CAST(timestamp * 1000 AS INTEGER) FROM messages WHERE session_id = ?1 AND role IN ('user', 'assistant') AND COALESCE(content, '') <> '' AND (role = 'user' OR (COALESCE(tool_name, '') = '' AND COALESCE(tool_calls, '') = '')) ORDER BY timestamp ASC, id ASC LIMIT 1")
                 .map_err(sqlite_schema_error)?;
             let mut rows = statement.query([session_id]).map_err(sqlite_schema_error)?;
             let Some(row) = rows.next().map_err(sqlite_schema_error)? else {

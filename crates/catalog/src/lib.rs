@@ -339,6 +339,9 @@ impl Catalog {
     }
 
     pub fn upsert_skill_instance(&self, inst: &SkillInstance) -> Result<(), CatalogError> {
+        // The unique path tuple may already be referenced by catalog projections or
+        // history. Preserve that row's identity when a rescan canonicalizes a legacy
+        // display path to the same path tuple.
         self.conn.execute(
             r#"
             INSERT INTO skill_instance (
@@ -348,7 +351,6 @@ impl Catalog {
             )
             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
             ON CONFLICT(agent, scope, path) DO UPDATE SET
-                id = excluded.id,
                 agent = excluded.agent,
                 scope = excluded.scope,
                 project_root = excluded.project_root,
@@ -886,6 +888,69 @@ mod tests {
 
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].name, "summarize-changes");
+    }
+
+    #[test]
+    fn upsert_preserves_existing_identity_when_a_canonical_path_is_already_referenced() {
+        let catalog = Catalog::in_memory().expect("catalog opens");
+        catalog.init().expect("schema initializes");
+        let mut existing = catalog_test_instance(
+            AgentId::ClaudeCode,
+            Scope::AgentGlobal,
+            "/tmp/shared-skill/SKILL.md",
+            "shared-skill",
+            SkillState::Missing,
+        );
+        existing.id = "legacy-display-path-id".to_string();
+        catalog
+            .upsert_skill_instance(&existing)
+            .expect("legacy instance upserts");
+        catalog
+            .conn
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 CREATE TABLE dependent_projection (
+                     instance_id TEXT PRIMARY KEY,
+                     FOREIGN KEY(instance_id) REFERENCES skill_instance(id) ON DELETE CASCADE
+                 );",
+            )
+            .expect("dependent projection initializes");
+        catalog
+            .conn
+            .execute(
+                "INSERT INTO dependent_projection (instance_id) VALUES (?1)",
+                params![existing.id],
+            )
+            .expect("dependent projection references the existing identity");
+
+        let mut rescanned = existing.clone();
+        rescanned.id = "canonical-path-id".to_string();
+        rescanned.state = SkillState::Loaded;
+        catalog
+            .upsert_skill_instance(&rescanned)
+            .expect("rescan upsert must not rewrite a referenced catalog identity");
+
+        let (stored_id, stored_state) = catalog
+            .conn
+            .query_row(
+                "SELECT id, state FROM skill_instance WHERE agent = ?1 AND scope = ?2 AND path = ?3",
+                params![
+                    existing.agent.as_str(),
+                    existing.scope.as_str(),
+                    existing.path.to_string_lossy()
+                ],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .expect("stored identity reads");
+        let projected_id = catalog
+            .conn
+            .query_row("SELECT instance_id FROM dependent_projection", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .expect("dependent identity reads");
+        assert_eq!(stored_id, existing.id);
+        assert_eq!(stored_state, SkillState::Loaded.as_str());
+        assert_eq!(projected_id, existing.id);
     }
 
     #[test]

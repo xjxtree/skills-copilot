@@ -623,7 +623,8 @@ enum UIStrings {
     static var taskCockpitRetry: String { text("taskCockpit.action.retry", "Retry") }
     static var taskCockpitPromptReady: String { text("taskCockpit.prompt.ready", "Redacted provider prompt is ready. Confirm before sending.") }
     static var taskCockpitPromptPreviewTitle: String { text("taskCockpit.promptPreview.title", "Provider Prompt Preview") }
-    static var taskCockpitPromptPreviewSummary: String { text("taskCockpit.promptPreview.summary", "Review the redacted prompt metadata and destination before sending this Task Preflight request.") }
+    static var taskCockpitPromptPreviewSummary: String { text("taskCockpit.promptPreview.summary", "Confirm the destination, full effective-skill count, and token/cost estimate. The complete redacted request is available in session history after sending.") }
+    static var taskCockpitPromptEstimatedTokens: String { text("taskCockpit.promptPreview.estimatedTokens", "Estimated tokens") }
     static var taskCockpitPromptConfirmSend: String { text("taskCockpit.promptPreview.confirmSend", "Confirm Send and Generate") }
     static var taskCockpitUnavailable: String { text("taskCockpit.unavailable", "Task preflight is unavailable in this service build.") }
     static var taskCockpitTaskRequired: String { text("taskCockpit.taskRequired", "Enter a task.") }
@@ -681,12 +682,13 @@ enum UIStrings {
     static var taskCockpitNextStepNeedsReview: String { text("taskCockpit.next.needsReview", "Next: confirm the boundary, or add details and regenerate.") }
     static var taskCockpitNextStepBlocked: String { text("taskCockpit.next.blocked", "Next: add product, resource, or action details, then regenerate.") }
     static var taskCockpitNextStepUnavailable: String { text("taskCockpit.next.unavailable", "Next: refresh the catalog, or choose a project/agent and retry.") }
+    static var taskCockpitNextStepProviderTruncated: String { text("taskCockpit.next.providerTruncated", "Next: retry once, narrow the task or agent scope, or choose a model that can return the complete JSON result.") }
     static var taskCockpitDiagnosticsTitle: String { text("taskCockpit.diagnostics.title", "Technical diagnostics") }
     static var taskCockpitDiagnosticsSummary: String { text("taskCockpit.diagnostics.summary", "For troubleshooting only: key matching steps and compact candidate evidence.") }
     static var taskCockpitDiagnosticsProcess: String { text("taskCockpit.diagnostics.process", "Matching process") }
     static var taskCockpitDiagnosticsTopRoute: String { text("taskCockpit.diagnostics.topRoute", "Top route") }
     static var taskCockpitDiagnosticsScanned: String { text("taskCockpit.diagnostics.scanned", "Scanned") }
-    static var taskCockpitHistorySummary: String { text("taskCockpit.history.summary", "Completed Preflights stay in memory for this app session. Task text and provider results are not saved to disk and disappear when the app quits.") }
+    static var taskCockpitHistorySummary: String { text("taskCockpit.history.summary", "Sent Preflights stay in memory for this app session, including the complete redacted request and provider response. Nothing is saved to disk, and all records disappear when the app quits.") }
     static var taskCockpitHistoryClear: String { text("taskCockpit.history.clear", "Clear session history") }
     static var taskCockpitHistoryClearConfirmationTitle: String { text("taskCockpit.history.clearConfirmation.title", "Clear session history?") }
     static var taskCockpitHistoryClearConfirmationMessage: String { text("taskCockpit.history.clearConfirmation.message", "This clears completed Preflights from this app session and retries removal of prior local history. This cannot be undone.") }
@@ -865,6 +867,8 @@ enum UIStrings {
             return llmPromptSendSucceeded
         case "Provider request failed.":
             return llmPromptSendFailed
+        case "Provider stopped Task Preflight output at the configured output-token limit before the JSON result was complete.":
+            return text("service.message.taskCockpitResponseTruncated", "Provider stopped Task Preflight output at the configured output-token limit before the JSON result was complete.")
         case "Service call timed out before the sidecar returned a complete response.":
             return text("service.error.sidecarTimedOut", "Service call timed out before the sidecar returned a complete response.")
         default:

@@ -24,10 +24,12 @@ impl ServiceHost {
             project_cwd: project_cwd.or(project_root),
             extra_roots: Vec::new(),
         };
-        Ok(Self {
+        let host = Self {
             app_data_dir,
             adapter_ctx,
-        })
+        };
+        host.scrub_persisted_task_cockpit_prompt_content()?;
+        Ok(host)
     }
 
     pub fn handle(&self, request: ServiceRequest) -> ServiceResponse {
@@ -269,8 +271,20 @@ impl ServiceHost {
                 } else {
                     serde_json::from_value(request.params)?
                 };
+                let catalog = self.open_catalog_for_read()?;
                 let adapter_ctx = self.effective_adapter_ctx()?;
-                serde_json::to_value(list_installed_skills_with_manager(&adapter_ctx, &params)?)
+                serde_json::to_value(list_installed_skills_with_manager(
+                    &catalog,
+                    &adapter_ctx,
+                    &params,
+                )?)
+                .map_err(Into::into)
+            }
+            "skillManager.inspectLocalSource" => {
+                let params: SkillManagerInspectLocalSourceParams =
+                    serde_json::from_value(request.params)?;
+                let adapter_ctx = self.effective_adapter_ctx()?;
+                serde_json::to_value(inspect_local_source_with_manager(&adapter_ctx, &params)?)
                     .map_err(Into::into)
             }
             "skillManager.previewInstall" => {
@@ -843,6 +857,40 @@ impl ServiceHost {
         Ok(runs)
     }
 
+    pub(crate) fn scrub_persisted_task_cockpit_prompt_content(&self) -> Result<bool, ServiceError> {
+        let path = self.llm_prompt_runs_path();
+        if !path.exists() {
+            return Ok(false);
+        }
+        let content = fs::read_to_string(&path)?;
+        let mut runs: Vec<Value> = serde_json::from_str(&content)?;
+        let mut changed = false;
+        for run in &mut runs {
+            let Some(run) = run.as_object_mut() else {
+                continue;
+            };
+            let is_task_cockpit = ["request_kind", "action"].iter().any(|field| {
+                run.get(*field)
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.eq_ignore_ascii_case("task_cockpit"))
+            });
+            if !is_task_cockpit {
+                continue;
+            }
+            for field in ["task", "draft_output"] {
+                if run.get(field).is_some_and(|value| !value.is_null()) {
+                    run.insert(field.to_string(), Value::Null);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let content = serde_json::to_string_pretty(&runs)?;
+            write_private_text_file(&path, &content)?;
+        }
+        Ok(changed)
+    }
+
     pub(crate) fn load_model_task_matches(
         &self,
     ) -> Result<Vec<ModelTaskMatchRecord>, ServiceError> {
@@ -1109,21 +1157,29 @@ impl ServiceHost {
         let adapter_ctx = self.effective_adapter_ctx()?;
         let roots = self.trace_redaction_roots(&adapter_ctx);
         let mut redactor = PromptRedactor::new(&roots);
-        let task = params
-            .request
-            .user_intent
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(|value| truncate_chars(&redactor.redact(value), 500));
+        let task_cockpit_session_only = params.request.action == LlmPromptActionKind::TaskCockpit;
+        let task = if task_cockpit_session_only {
+            None
+        } else {
+            params
+                .request
+                .user_intent
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| truncate_chars(&redactor.redact(value), 500))
+        };
         let error_message = send
             .error_message
             .as_deref()
             .map(|value| truncate_chars(&redactor.redact(value), 500));
-        let draft_output = send
-            .output_text
-            .as_deref()
-            .map(|value| truncate_chars(&redactor.redact(value), 12_000));
+        let draft_output = if task_cockpit_session_only {
+            None
+        } else {
+            send.output_text
+                .as_deref()
+                .map(|value| truncate_chars(&redactor.redact(value), 12_000))
+        };
         let request_redaction = redactor.summary();
         let completed_at = unix_timestamp_millis();
         let estimated_total_tokens = preview

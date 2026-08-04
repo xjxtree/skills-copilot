@@ -76,6 +76,31 @@ coverage, quarantine, archive, and language-cache directories before inspecting
 skill files. A configured root that is itself a skill file is accepted only by
 an adapter whose official format allows it (currently Pi Markdown skills).
 
+### Local-Session Message Classification
+
+Assistant role is necessary provenance but is not sufficient evidence for an
+Agent reply. The local-session service applies the following lifecycle evidence
+before projecting the common `user_message`, `agent_reply`, `thinking`, and
+`tool_call` kinds:
+
+| Agent | Terminal Agent reply | Thinking / process evidence |
+| --- | --- | --- |
+| Claude Code | Assistant text ending the turn (`end_turn` or `stop_sequence`); legacy assistant text only when no non-final evidence exists | Typed thinking/reasoning plus assistant text on `tool_use`, truncation, interruption, or error records |
+| Codex | Assistant message with `phase=final_answer` | `phase=commentary`, `agent_reasoning`, and other reasoning/thinking records |
+| opencode | Assistant text with `finish=stop`; legacy missing-finish text only when the same message has no tool part | Assistant text with any other explicit finish, or missing finish plus a tool part; reasoning parts remain thinking |
+| Pi | Assistant text with `stopReason=stop`; legacy assistant text only when no non-final evidence exists | Thinking blocks and assistant text on `toolUse`, length, aborted, interrupted, or error records |
+| Hermes | Assistant content on a row without tool-call fields | `reasoning`, plus assistant content on a tool-bearing row |
+| OpenClaw | Assistant text blocks on an event without a tool-call block | Thinking/reasoning blocks and assistant text co-located with a tool call |
+
+Tool payloads remain separate `tool_call` items even when their containing
+assistant event also carries process text. Typed thinking is never concatenated
+into the terminal reply text. Selected-session paging covers every recognized
+`user_message`, terminal `agent_reply`, `thinking`, `tool_call`, and explicit
+`skill_call`, so none of the five UI kinds remains capped by the bounded summary
+sample. Tool-result/output records are excluded from the page stream. Paging
+retains per-request byte limits and advances through oversized excluded records
+without silently treating those limits as terminal completeness.
+
 ### Codex In ChatGPT
 
 - `codex` remains the adapter ID even though the current desktop host is
@@ -121,8 +146,8 @@ an adapter whose official format allows it (currently Pi Markdown skills).
 ## Skill Manager Tooling
 
 - `npx skills` is the first writable manager tool. It owns search, list,
-  install, remove, update, and local template creation when the app calls
-  `skillManager.*`.
+  read-only local-source inspection, install, remove, update, and local template
+  creation when the app calls `skillManager.*`.
 - `skills-npm` is registered for capability discovery only in this slice; write
   execution needs a future scoped adapter.
 - Manager-backed search/install/update use the scoped external network path by
@@ -162,6 +187,13 @@ an adapter whose official format allows it (currently Pi Markdown skills).
   token fixture that proves the external manager contract.
 - Install uses the manager symlink flow; the native UI does not offer copy
   distribution.
+- Local package intake has two explicit entries. Direct folder installation
+  uses `skillManager.inspectLocalSource` and the manager's `add --list
+  --full-depth` discovery, supports one or more valid `SKILL.md` files, and
+  leaves the source directory in place. ZIP snapshot import accepts exactly one
+  skill and writes a confirmed, app-owned library copy. Direct-folder install
+  preview binds the bounded source revision and must be repeated after any
+  content change.
 - Skill removal distinguishes selected-Agent physical uninstall from complete
   uninstall. A proper subset requires all exact package-row identities and
   removes only a separable direct-child symlink or copied skill directory under

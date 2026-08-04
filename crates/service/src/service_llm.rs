@@ -1,8 +1,7 @@
 use super::*;
 use crate::service_keyset_cursor::{decode_cursor_for_method, encode_cursor, KeysetCursor};
 
-const TASK_COCKPIT_MAX_EFFECTIVE_SKILLS: usize = 24;
-const TASK_COCKPIT_MAX_PROMPT_TOKENS: u32 = 12_000;
+const TASK_COCKPIT_OUTPUT_TOKEN_ESTIMATE: u32 = 4_096;
 
 impl ServiceHost {
     pub fn llm_status(&self) -> LlmStatus {
@@ -103,8 +102,6 @@ impl ServiceHost {
         let estimated_input_tokens = estimate_tokens(&[&built.prompt_preview]);
         let estimated_output_tokens = built.estimated_output_tokens;
         let estimated_total_tokens = estimated_input_tokens.saturating_add(estimated_output_tokens);
-        let task_cockpit_budget_exceeded = params.action == LlmPromptActionKind::TaskCockpit
-            && estimated_total_tokens > TASK_COCKPIT_MAX_PROMPT_TOKENS;
         let estimated_cost_usd = profile
             .as_ref()
             .map(|profile| estimate_prompt_cost_usd(profile.provider_type, estimated_total_tokens))
@@ -123,18 +120,16 @@ impl ServiceHost {
                 false,
                 "Monthly provider budget is 0; provider requests are disabled.".to_string(),
             ),
-            Some(_) if task_cockpit_budget_exceeded => (
-                false,
-                format!(
-                    "Task Preflight prompt estimate exceeds the {} token safety budget; narrow the selected agents or skills.",
-                    TASK_COCKPIT_MAX_PROMPT_TOKENS
-                ),
-            ),
-            Some(profile) if profile.single_request_token_limit < estimated_total_tokens => (
-                false,
-                "Single request token limit is lower than the redacted prompt estimate."
-                    .to_string(),
-            ),
+            Some(profile)
+                if params.action != LlmPromptActionKind::TaskCockpit
+                    && profile.single_request_token_limit < estimated_total_tokens =>
+            {
+                (
+                    false,
+                    "Single request token limit is lower than the redacted prompt estimate."
+                        .to_string(),
+                )
+            }
             Some(_) => (
                 true,
                 "Redacted prompt preview is ready for explicit confirmation.".to_string(),
@@ -1090,7 +1085,7 @@ impl ServiceHost {
             LlmPromptActionKind::Recommend => 500,
             LlmPromptActionKind::ExplainConflict => 650,
             LlmPromptActionKind::DraftFrontmatter => 450,
-            LlmPromptActionKind::TaskCockpit => 1400,
+            LlmPromptActionKind::TaskCockpit => TASK_COCKPIT_OUTPUT_TOKEN_ESTIMATE,
         };
         let prompt_preview = sections.join("\n\n");
         let redaction = redactor.summary();
@@ -1116,7 +1111,6 @@ impl ServiceHost {
         } else {
             findings
                 .iter()
-                .take(12)
                 .map(|finding| {
                     format!(
                         "- {} severity={} message={} suggestion={}",
@@ -1190,10 +1184,7 @@ impl ServiceHost {
         });
         let eligible_skill_count = eligible_skills.len();
         if let Some(catalog) = catalog.as_ref() {
-            for skill in eligible_skills
-                .into_iter()
-                .take(TASK_COCKPIT_MAX_EFFECTIVE_SKILLS)
-            {
+            for skill in eligible_skills {
                 let description = catalog
                     .get_skill_detail(&skill.id)?
                     .map(|detail| detail.description)
@@ -1206,7 +1197,7 @@ impl ServiceHost {
                     "scope": redactor.redact(&skill.scope),
                     "state": redactor.redact(&skill.state),
                     "enabled": skill.enabled,
-                    "description": truncate_chars(&redactor.redact(&description), 320),
+                    "description": redactor.redact(&description),
                 }));
             }
         }
@@ -1268,11 +1259,23 @@ impl ServiceHost {
             "candidate_selection": {
                 "eligible_skill_count": eligible_skill_count,
                 "included_skill_count": effective_skills.len(),
-                "limit": TASK_COCKPIT_MAX_EFFECTIVE_SKILLS,
-                "strategy": if candidate_id_set.is_empty() { "task-relevance" } else { "explicit-instance-selection" }
+                "omitted_skill_count": eligible_skill_count.saturating_sub(effective_skills.len()),
+                "strategy": if candidate_id_set.is_empty() { "complete-effective-skill-inventory" } else { "complete-explicit-instance-selection" }
             },
             "agent_summaries": agent_summaries,
             "effective_skills": effective_skills,
+            "output_limits": {
+                "agent_candidates": 3,
+                "skill_candidates": 3,
+                "reasons_per_candidate": 2,
+                "readiness_signals": 4,
+                "gap_rows": 3,
+                "blocker_rows": 3,
+                "notes": 2,
+                "prose_chars_per_value": 160,
+                "target_max_output_tokens": 3200,
+                "task_text": "copy exactly; exempt from prose_chars_per_value"
+            },
             "output_schema": {
                 "generated_by": "provider-task-cockpit",
                 "catalog_available": true,
@@ -1363,7 +1366,7 @@ impl ServiceHost {
         let payload_text =
             serde_json::to_string_pretty(&payload).unwrap_or_else(|_| "{}".to_string());
         Ok(format!(
-            "Task preflight provider input:\n{}\n\nReturn only JSON matching `output_schema`. The UI will display the top recommended path, the top three skill candidates, key reasons, and concise process notes.",
+            "Task preflight provider input:\n{}\n\nReturn compact JSON only matching `output_schema`. Apply every `output_limits` value strictly, use empty arrays when no evidence exists, and never repeat catalog input or descriptions. The UI will display the top recommended path, the top three skill candidates, key reasons, and concise process notes.",
             payload_text
         ))
     }
@@ -1511,7 +1514,7 @@ impl ServiceHost {
         let conflicts = list_conflicts_for_context(&catalog, &adapter_ctx)?;
         let findings = user_visible_rule_findings(&catalog.list_rule_findings()?);
         let mut lines = Vec::new();
-        for conflict in conflicts.iter().take(20) {
+        for conflict in &conflicts {
             lines.push(format!(
                 "conflict reason={} definition_id={} instances={}",
                 conflict.reason,
@@ -1519,7 +1522,7 @@ impl ServiceHost {
                 conflict.instance_ids.len()
             ));
         }
-        for finding in findings.iter().take(20) {
+        for finding in &findings {
             lines.push(format!(
                 "finding rule={} severity={} has_instance={} has_suggestion={}",
                 finding.rule_id,

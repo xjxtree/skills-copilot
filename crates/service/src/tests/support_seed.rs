@@ -19,7 +19,46 @@ pub(super) fn spawn_mock_openai_server() -> (String, std::thread::JoinHandle<Str
 pub(super) fn spawn_mock_openai_server_with_content(
     content: impl Into<String>,
 ) -> (String, std::thread::JoinHandle<String>) {
+    spawn_mock_openai_server_with_content_and_finish_reason(content, "stop")
+}
+
+pub(super) fn spawn_mock_openai_server_with_content_and_finish_reason(
+    content: impl Into<String>,
+    finish_reason: impl Into<String>,
+) -> (String, std::thread::JoinHandle<String>) {
     let content = content.into();
+    let finish_reason = finish_reason.into();
+    spawn_mock_openai_server_with_response(move |_| (content, finish_reason))
+}
+
+pub(super) fn spawn_mock_openai_server_requiring_output_budget(
+    minimum_output_tokens: u64,
+    truncated_content: impl Into<String>,
+    complete_content: impl Into<String>,
+) -> (String, std::thread::JoinHandle<String>) {
+    let truncated_content = truncated_content.into();
+    let complete_content = complete_content.into();
+    spawn_mock_openai_server_with_response(move |request_text| {
+        let request_body = request_text
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("mock request body");
+        let request_json: Value = serde_json::from_str(request_body).expect("mock request json");
+        if request_json
+            .get("max_tokens")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value >= minimum_output_tokens)
+        {
+            (complete_content, "stop".to_string())
+        } else {
+            (truncated_content, "length".to_string())
+        }
+    })
+}
+
+fn spawn_mock_openai_server_with_response(
+    response_for_request: impl FnOnce(String) -> (String, String) + Send + 'static,
+) -> (String, std::thread::JoinHandle<String>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock provider listener");
     let port = listener
         .local_addr()
@@ -58,8 +97,10 @@ pub(super) fn spawn_mock_openai_server_with_content(
             bytes.extend_from_slice(&buffer[..read]);
         }
         let request_text = String::from_utf8_lossy(&bytes).to_string();
+        let (content, finish_reason) = response_for_request(request_text.clone());
         let body = serde_json::json!({
             "choices": [{
+                "finish_reason": finish_reason,
                 "message": {
                     "content": content
                 }

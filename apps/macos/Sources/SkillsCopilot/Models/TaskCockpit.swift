@@ -91,7 +91,7 @@ enum TaskCockpitHandoffModel {
             )
         }
 
-        let reasons = TaskCockpitDecisionModel(result: result).keyReasons.prefix(3)
+        let reasons = TaskCockpitDecisionModel(result: result).keyReasons
         if !reasons.isEmpty {
             lines.append("")
             lines.append(UIStrings.text("taskCockpit.handoff.notes", "Review notes") + ":")
@@ -319,6 +319,8 @@ struct TaskCockpitHistoryRecord: Identifiable, Hashable {
     let agentIDs: [String]
     let result: TaskCockpitResult
     let operationState: TaskCockpitOperationState
+    let promptPreview: LLMPromptPreview?
+    let providerOutput: String?
 
     init(
         id: UUID = UUID(),
@@ -326,6 +328,8 @@ struct TaskCockpitHistoryRecord: Identifiable, Hashable {
         agentIDs: [String] = [],
         result: TaskCockpitResult,
         operationState: TaskCockpitOperationState,
+        promptPreview: LLMPromptPreview? = nil,
+        providerOutput: String? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -334,6 +338,8 @@ struct TaskCockpitHistoryRecord: Identifiable, Hashable {
         self.agentIDs = Self.normalizedAgentIDs(agentIDs.isEmpty ? result.agentScopeIDs : agentIDs)
         self.result = result
         self.operationState = operationState
+        self.promptPreview = promptPreview
+        self.providerOutput = providerOutput
     }
 
     var displayTask: String {
@@ -369,6 +375,32 @@ struct TaskCockpitHistoryRecord: Identifiable, Hashable {
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty && allowed.contains($0) }
             .filter { seen.insert($0).inserted }
+    }
+}
+
+enum TaskCockpitHistoryPresentation {
+    static let pageSize = 12
+
+    static func defaultStartDate(now: Date = Date(), calendar: Calendar = .current) -> Date {
+        calendar.date(
+            byAdding: .day,
+            value: -6,
+            to: calendar.startOfDay(for: now)
+        ) ?? now
+    }
+
+    static func filteredRecords(
+        _ records: [TaskCockpitHistoryRecord],
+        startDate: Date,
+        endDate: Date,
+        calendar: Calendar = .current
+    ) -> [TaskCockpitHistoryRecord] {
+        let lowerBound = calendar.startOfDay(for: min(startDate, endDate))
+        let inclusiveEnd = calendar.startOfDay(for: max(startDate, endDate))
+        let upperBound = calendar.date(byAdding: .day, value: 1, to: inclusiveEnd) ?? .distantFuture
+        return records.filter { record in
+            record.createdAt >= lowerBound && record.createdAt < upperBound
+        }
     }
 }
 
@@ -952,6 +984,14 @@ struct TaskCockpitResult: Decodable, Hashable {
 
     var isUnavailable: Bool {
         generatedBy == "unavailable" || fallbackReason != nil && routeCandidates.isEmpty && agentCandidates.isEmpty && skillCandidates.isEmpty
+    }
+
+    var isProviderOutputTruncated: Bool {
+        [fallbackReason, summary.summaryText]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .contains { value in
+                value == "response_truncated" || value.hasPrefix("response_truncated:")
+            }
     }
 
     var recoveryDiagnosticReason: String? {

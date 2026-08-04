@@ -351,6 +351,7 @@ struct SkillManagerInstalledRecord: Codable, Identifiable, Hashable {
     let source: String?
     let sourceKind: String?
     let agents: [String]
+    let separableAgents: [String]?
     let scope: String?
     let path: String?
     let raw: JSONValue?
@@ -360,6 +361,7 @@ struct SkillManagerInstalledRecord: Codable, Identifiable, Hashable {
         case source
         case sourceKind = "source_kind"
         case agents
+        case separableAgents = "separable_agents"
         case scope
         case path
         case raw
@@ -391,6 +393,7 @@ struct SkillManagerInventoryItem: Identifiable, Hashable {
     let source: String?
     let scope: SkillManagerScope
     let agents: [String]
+    let separableAgents: [String]?
     let origin: Origin
     let localOwnership: LocalOwnership?
     let localInstanceID: String?
@@ -403,6 +406,7 @@ struct SkillManagerInventoryItem: Identifiable, Hashable {
         source: String?,
         scope: SkillManagerScope,
         agents: [String],
+        separableAgents: [String]? = nil,
         origin: Origin,
         localOwnership: LocalOwnership?,
         localInstanceID: String?,
@@ -414,6 +418,7 @@ struct SkillManagerInventoryItem: Identifiable, Hashable {
         self.source = source
         self.scope = scope
         self.agents = agents
+        self.separableAgents = separableAgents
         self.origin = origin
         self.localOwnership = localOwnership
         self.localInstanceID = localInstanceID
@@ -441,7 +446,10 @@ struct SkillManagerInventoryItem: Identifiable, Hashable {
     }
 
     func missingDetachTargets(for selectedAgents: [String]) -> [String] {
-        let available = Set(agentTargets.filter { !$0.instanceIDs.isEmpty }.map(\.agent))
+        let available = Set(
+            separableAgents
+                ?? agentTargets.filter { !$0.instanceIDs.isEmpty }.map(\.agent)
+        )
         return SkillManagerAgent.defaultTargets
             .map(\.rawValue)
             .filter { selectedAgents.contains($0) && !available.contains($0) }
@@ -509,6 +517,7 @@ enum SkillManagerInventoryBuilder {
                 source: localSource?.path ?? appOwnedSource.map(sourceDirectory) ?? record.source,
                 scope: scope,
                 agents: affectedAgents,
+                separableAgents: record.separableAgents.map(canonicalAgentIDs),
                 origin: record.isLocalSource ? .local : .manager,
                 localOwnership: record.isLocalSource
                     ? (localSource != nil ? localOwnership(for: scope) : (appOwnedSource == nil ? .external : .appOwned))
@@ -704,12 +713,24 @@ enum SkillManagerInventoryBuilder {
                 source: existing.source ?? record.source,
                 sourceKind: existing.sourceKind ?? record.sourceKind,
                 agents: canonicalAgentIDs(existing.agents + record.agents),
+                separableAgents: mergedSeparableAgents(
+                    existing.separableAgents,
+                    record.separableAgents
+                ),
                 scope: existing.scope ?? record.scope,
                 path: existing.path ?? record.path,
                 raw: existing.raw ?? record.raw
             )
         }
         return order.compactMap { recordsByKey[$0] }
+    }
+
+    private static func mergedSeparableAgents(
+        _ left: [String]?,
+        _ right: [String]?
+    ) -> [String]? {
+        guard left != nil || right != nil else { return nil }
+        return canonicalAgentIDs((left ?? []) + (right ?? []))
     }
 
     private static func sharedAgentsSourceDirectory(for skill: SkillRecord) -> String? {

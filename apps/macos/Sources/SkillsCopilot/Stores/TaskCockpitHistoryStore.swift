@@ -16,8 +16,6 @@ struct TaskCockpitHistoryStore {
         case failed(errorNumber: Int32)
     }
 
-    static let maxRecords = 12
-
     let fileURL: URL
     private let unlinkItem: (String) -> UnlinkResult
 

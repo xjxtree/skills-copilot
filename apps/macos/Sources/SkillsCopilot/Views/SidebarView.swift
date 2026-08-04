@@ -1508,9 +1508,9 @@ private struct SessionSidebarRow: View {
 
     private var sessionCompactSummary: String {
         var parts = [
-            "\(session.userMessageCount) \(UIStrings.text("sidebar.sessions.userShort", "user"))",
-            "\(session.toolCallCount) \(UIStrings.text("sidebar.sessions.toolShort", "tool"))",
-            "\(session.skillCallCount) \(UIStrings.text("sidebar.sessions.skillShort", "skill"))"
+            "\(displayCount(session.userMessageCount)) \(UIStrings.text("sidebar.sessions.userShort", "user"))",
+            "\(displayCount(session.toolCallCount)) \(UIStrings.text("sidebar.sessions.toolShort", "tool"))",
+            "\(displayCount(session.skillCallCount)) \(UIStrings.text("sidebar.sessions.skillShort", "skill"))"
         ]
         if showsProjectRoot, let projectPath = session.projectRoot, !projectPath.isEmpty {
             parts.append(
@@ -1524,6 +1524,10 @@ private struct SessionSidebarRow: View {
             parts.append(DisplayText.timestamp(endedAt))
         }
         return parts.joined(separator: " · ")
+    }
+
+    private func displayCount(_ value: Int) -> String {
+        session.countsComplete ? "\(value)" : "≥\(value)"
     }
 
     private var sessionHelp: String {

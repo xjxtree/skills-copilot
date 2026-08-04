@@ -35,6 +35,190 @@ fn search_parser_extracts_ansi_find_results() {
     assert_eq!(results[1].source.as_deref(), Some("obra/superpowers"));
 }
 
+#[cfg(unix)]
+#[test]
+fn local_source_inspection_discovers_multiple_skills_without_installing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-local-source-inspection-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    ));
+    let source = root.join("source");
+    for (directory, name, description) in [
+        ("alpha", "alpha-skill", "Alpha local skill."),
+        ("nested/beta", "beta-skill", "Beta local skill."),
+    ] {
+        let skill_dir = source.join(directory);
+        fs::create_dir_all(&skill_dir).expect("create local skill directory");
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\nBody.\n"),
+        )
+        .expect("write local skill");
+    }
+    let fake_npx = root.join("npx");
+    fs::write(
+        &fake_npx,
+        "#!/bin/sh\ncase \"$*\" in\n  *\"skills add \"*\" --list --full-depth\"*) printf 'Found 2 skills\\nAvailable Skills\\n' ;;\n  *) exit 64 ;;\nesac\n",
+    )
+    .expect("write fake npx");
+    let mut permissions = fs::metadata(&fake_npx)
+        .expect("fake npx metadata")
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&fake_npx, permissions).expect("make fake npx executable");
+
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: Some(root.join("project")),
+        project_cwd: Some(root.join("project")),
+        extra_roots: Vec::new(),
+    };
+    let inspection = inspect_local_source_with_executable(
+        &ctx,
+        &SkillManagerInspectLocalSourceParams {
+            source_path: source.to_string_lossy().to_string(),
+        },
+        &fake_npx,
+    )
+    .expect("inspect local source");
+
+    assert_eq!(
+        inspection
+            .skills
+            .iter()
+            .map(|skill| (skill.name.as_str(), skill.description.as_str()))
+            .collect::<Vec<_>>(),
+        vec![
+            ("alpha-skill", "Alpha local skill."),
+            ("beta-skill", "Beta local skill."),
+        ]
+    );
+    assert!(inspection.source_revision.starts_with("sha256:"));
+    assert_eq!(inspection.preview.operation, "inspectLocalSource");
+    assert!(!inspection.preview.requires_confirmation);
+    assert!(!inspection.preview.network_required);
+    assert!(inspection.preview.command.contains(&"--list".to_string()));
+    assert!(inspection
+        .preview
+        .command
+        .contains(&"--full-depth".to_string()));
+    assert!(!inspection.preview.command.contains(&"--agent".to_string()));
+    assert!(!inspection.preview.command.contains(&"-y".to_string()));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn local_source_install_preview_token_changes_with_directory_contents() {
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-local-source-preview-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    ));
+    let source = root.join("local-skill");
+    fs::create_dir_all(&source).expect("create local source");
+    let skill_path = source.join("SKILL.md");
+    fs::write(
+        &skill_path,
+        "---\nname: local-skill\ndescription: First revision.\n---\nBody.\n",
+    )
+    .expect("write first revision");
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: Some(root.join("project")),
+        project_cwd: Some(root.join("project")),
+        extra_roots: Vec::new(),
+    };
+    let params = SkillManagerInstallParams {
+        source: source.to_string_lossy().to_string(),
+        skills: vec!["local-skill".to_string()],
+        agents: vec!["codex".to_string()],
+        scope: Some("project".to_string()),
+        distribution: None,
+        network_allowed: false,
+        confirmed: false,
+        preview_token: None,
+    };
+
+    let first = preview_install_with_manager(&ctx, &params).expect("first local preview");
+    fs::write(
+        &skill_path,
+        "---\nname: local-skill\ndescription: Second revision.\n---\nBody changed.\n",
+    )
+    .expect("write second revision");
+    let second = preview_install_with_manager(&ctx, &params).expect("second local preview");
+
+    assert_ne!(first.preview.preview_token, second.preview.preview_token);
+    assert!(!first.preview.network_required);
+    assert_eq!(first.preview.operation, "install");
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn local_source_install_rejects_preview_after_directory_contents_change() {
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-local-source-stale-preview-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    ));
+    let source = root.join("local-skill");
+    fs::create_dir_all(&source).expect("create local source");
+    let skill_path = source.join("SKILL.md");
+    fs::write(
+        &skill_path,
+        "---\nname: local-skill\ndescription: First revision.\n---\nBody.\n",
+    )
+    .expect("write first revision");
+    let ctx = AdapterContext {
+        user_home: root.join("home"),
+        project_root: Some(root.join("project")),
+        project_cwd: Some(root.join("project")),
+        extra_roots: Vec::new(),
+    };
+    let mut params = SkillManagerInstallParams {
+        source: source.to_string_lossy().to_string(),
+        skills: vec!["local-skill".to_string()],
+        agents: vec!["codex".to_string()],
+        scope: Some("project".to_string()),
+        distribution: None,
+        network_allowed: false,
+        confirmed: false,
+        preview_token: None,
+    };
+    let preview = preview_install_with_manager(&ctx, &params).expect("local preview");
+    fs::write(
+        &skill_path,
+        "---\nname: local-skill\ndescription: Second revision.\n---\nChanged.\n",
+    )
+    .expect("write changed revision");
+    params.confirmed = true;
+    params.preview_token = Some(preview.preview.preview_token);
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+
+    let error = apply_install_with_manager(&catalog, &ctx, &params)
+        .expect_err("changed source must invalidate confirmation");
+
+    assert!(matches!(
+        error,
+        CommandError::InvalidSkillManagerRequest(message)
+            if message.contains("fresh preview_token")
+    ));
+    let _ = fs::remove_dir_all(root);
+}
+
 #[test]
 fn search_parser_does_not_cap_returned_manager_rows() {
     let stdout = (0..55)
@@ -112,6 +296,7 @@ fn installed_record_reports_exact_enumerable_total() {
 #[test]
 fn installed_parser_rejects_truncated_json_instead_of_claiming_exact_empty() {
     let stdout = serde_json::to_string(&serde_json::json!({
+        "padding": "x".repeat(MAX_CAPTURE_BYTES),
         "skills": (0..400)
             .map(|index| serde_json::json!({
                 "name": format!("installed-{index}"),
@@ -136,6 +321,7 @@ fn installed_parser_rejects_truncated_json_instead_of_claiming_exact_empty() {
 #[test]
 fn installed_parser_accepts_complete_json_larger_than_diagnostic_capture_limit() {
     let stdout = serde_json::to_string(&serde_json::json!({
+        "padding": "x".repeat(MAX_CAPTURE_BYTES),
         "skills": (0..400)
             .map(|index| serde_json::json!({
                 "name": format!("installed-{index}"),
@@ -190,6 +376,71 @@ fn installed_parser_normalizes_cli_agent_display_names_to_supported_ids() {
             "pi",
         ]
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn installed_inventory_distinguishes_separable_links_from_shared_consumers() {
+    use std::os::unix::fs::symlink;
+
+    let root = std::env::temp_dir().join(format!(
+        "skill-manager-separable-inventory-{}-{}",
+        std::process::id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos()
+    ));
+    let home = root.join("home");
+    let shared_source = home.join(".agents/skills/shared-skill");
+    fs::create_dir_all(&shared_source).expect("create shared source");
+    fs::write(
+        shared_source.join("SKILL.md"),
+        "---\nname: shared-skill\ndescription: Shared test skill.\n---\n",
+    )
+    .expect("write shared skill");
+
+    let ctx = AdapterContext {
+        user_home: home.clone(),
+        project_root: None,
+        project_cwd: None,
+        extra_roots: Vec::new(),
+    };
+    for agent in ["claude-code", "pi", "hermes-agent", "openclaw"] {
+        let agent_root = physical_removal_roots(&ctx, agent, "global")
+            .expect("supported Agent roots")
+            .into_iter()
+            .last()
+            .expect("Agent removal root");
+        fs::create_dir_all(&agent_root).expect("create Agent skills root");
+        symlink(&shared_source, agent_root.join("shared-skill"))
+            .expect("link separable Agent target");
+    }
+    let catalog = Catalog::open(&root.join("catalog.sqlite")).expect("catalog opens");
+    catalog.init().expect("catalog initializes");
+    scan_all_catalog_report(&ctx, &catalog).expect("scan installed targets");
+    let mut installed = parse_installed_records(
+        &serde_json::json!([{
+            "name": "shared-skill",
+            "path": shared_source,
+            "agents": ["Claude Code", "Pi", "OpenCode", "Codex", "Hermes Agent", "OpenClaw"]
+        }])
+        .to_string(),
+    )
+    .expect("installed inventory row");
+
+    enrich_installed_records(&ctx, Some("global"), &mut installed);
+    enrich_installed_removal_capabilities(&catalog, &ctx, Some("global"), &mut installed)
+        .expect("derive preview-equivalent removal capabilities");
+
+    let wire = serde_json::to_value(&installed[0]).expect("serialized installed record");
+    assert_eq!(
+        wire.get("separable_agents"),
+        Some(&serde_json::json!(["claude-code"])),
+        "the inventory must require both a preview-safe link and an exact current catalog identity"
+    );
+
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]

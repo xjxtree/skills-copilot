@@ -37,9 +37,10 @@ verification.
   explicit confirmation.
 - Skill scripts remain default-denied.
 - Skill Manager may invoke supported external manager CLIs for search,
-  install, remove, update, list, and local template creation when the request
-  exposes command preview, target agents, network posture, telemetry-off env,
-  and confirmation state. Calls must use argv arrays, not shell strings.
+  install, remove, update, list, read-only local-source inspection, and local
+  template creation when the request exposes command preview, target agents,
+  network posture, telemetry-off env, and confirmation state. Calls must use
+  argv arrays, not shell strings.
 - App-local metadata writes must be redacted.
 - Adapter config writes must use the guarded paths documented in
   `docs/adapters/agent-adapters.md`.
@@ -154,6 +155,7 @@ conditional on the exact local state that the client reviewed.
 | `skillManager.listTools` | None | Never | Never | None |
 | `skillManager.search` | External manager state may change when invoked | Conditional | Conditional | None |
 | `skillManager.listInstalled` | External manager state may change when invoked | Always | Never | None |
+| `skillManager.inspectLocalSource` | External manager state may change when invoked | Always | Never | None |
 | `skillManager.previewInstall` | None | Never | Never | None |
 | `skillManager.applyInstall` | App-local data, External manager state may change when invoked | Always | Conditional | Required |
 | `skillManager.previewRemove` | None | Never | Never | None |
@@ -387,6 +389,22 @@ or expose write controls.
   wildcard agent targeting.
 - Install uses symlink distribution. The native Skill Manager does not expose a
   copy-mode choice.
+- `skillManager.inspectLocalSource` accepts one absolute regular directory,
+  validates a bounded tree locally, and runs
+  `npx skills add <directory> --list --full-depth` without installation or
+  network access. Nested symlinks, special files, duplicate skill names,
+  oversized trees, and directories with no valid `SKILL.md` fail closed. The
+  response contains the discovered skill
+  names, descriptions, relative manifest paths, a redacted display path, and a
+  SHA-256 source revision; packaged scripts are never executed.
+- A direct local-folder install keeps its source in place and uses the normal
+  `skillManager.previewInstall` / `applyInstall` manager flow. Preview verifies
+  that every selected skill still exists and binds the complete bounded source
+  revision into the confirmation token. Apply recomputes that revision before
+  invoking the manager, so any intervening content change invalidates the old
+  confirmation. Absolute and resolved project-relative local sources are
+  network-free; repository and registry sources retain their normal network
+  posture.
 - Search, install, and update may require external network access through the
   manager CLI. The native client allows those scoped operations by default;
   previews still show the destination command before any confirmed write.
@@ -414,6 +432,15 @@ or expose write controls.
   retain a redacted local source path; every row also retains a dedicated,
   redacted `path` identity so the native cache can associate the CLI row with
   its scanned canonical source without treating that source as another package.
+  Each row includes `separable_agents`, derived from current exact catalog
+  identities and the documented install roots with the same physical checks as
+  removal preview. An Agent-specific symlink or copied directory is listed only
+  when removing it would actually stop that Agent loading the skill, every
+  preserved target survives, and the Agent has no additional direct path to the
+  canonical shared source. A link without a current catalog identity is not a
+  removable capability. The native client uses this field to block an
+  impossible partial-removal preview before issuing a service request; preview
+  and apply still repeat the filesystem validation and fail closed.
   Appearing in `skills list` alone is not manager ownership evidence. No raw
   manager payload is included in that
   error. No pagination flags or
@@ -447,6 +474,11 @@ or expose write controls.
   does not publish a success banner.
   Empty and network-blocked searches still display zero loaded rows, unknown
   total, the typed source limitation and recovery guidance, with no load action.
+- Human-readable stdout and stderr returned by a Skill Manager operation are
+  captured once up to the shared 4 MiB machine-output boundary. Output beyond
+  that boundary ends with an explicit `<truncated>` marker. The native UI
+  renders the complete returned value in a scrolling preview with copy and
+  complete-detail actions; it does not apply a second line-count truncation.
 - Skill removal has two explicit modes. A proper subset of the linked Agents is
   a selected-Agent physical uninstall. `instance_ids` contains every exact
   identity attached to the selected package row so the service can partition
@@ -470,9 +502,12 @@ or expose write controls.
 - Some adapters directly consume the same `.agents/skills/<skill>` directory.
   When a selected and unselected Agent have no distinct symlink or copied
   directory, physical partial uninstall is impossible without deleting the
-  shared source. Preview returns `invalid_skill_manager_request` with that
-  blocker instead of reporting a false success or silently converting uninstall
-  into config disable.
+  shared source. Installed inventory omits those Agents from
+  `separable_agents`, so the native client disables partial preview and explains
+  which selected Agents cannot be detached. A direct or stale client request
+  still returns `invalid_skill_manager_request` with that blocker instead of
+  reporting a false success or silently converting uninstall into config
+  disable.
 - Selecting every linked Agent is a complete uninstall. The request sets
   `full_uninstall=true`; the service intentionally omits all `--agent`
   arguments so the external manager removes every target it recognizes,
@@ -495,9 +530,13 @@ or expose write controls.
   targets and the shared install scope are chosen only after a skill is
   selected. Manager update changes a shared source and therefore reports all
   linked supported agents instead of accepting a misleading per-agent target.
-- Remote search also exposes a local ZIP import entry. Import validates one
-  skill and copies it into the app-owned local library after confirmation; the
-  imported skill then uses the normal project/global and agent install flow.
+- The search/install workflow exposes two distinct local-package entries.
+  **Install from Folder** discovers one or more skills through
+  `skillManager.inspectLocalSource`, leaves the selected source in place, and
+  sends the chosen skill through normal scope/Agent command preview and
+  confirmation. **Import ZIP Snapshot** validates exactly one skill and copies
+  it into the app-owned local library after confirmation; the imported skill
+  then uses the normal project/global and Agent install flow.
 - Local app-owned and guarded descendant project/global `.agents/skills`
   sources use a replacement ZIP selected after the skill. The
   service requires an absolute regular archive with exactly one matching
@@ -519,7 +558,9 @@ or expose write controls.
   `timestamp` when its source event has a timestamp.
 - Codex summary rows come from the guarded `state_*.sqlite` thread index used by
   current `thread/list`; when the current Codex app catalog is available, its
-  active `display_title` takes precedence so list titles match Codex. Rows
+  active `display_title` overlays that snapshot, and the last valid explicit
+  rename in guarded `session_index.jsonl`/`history.jsonl` takes final precedence
+  so startup and manual refresh cannot roll a renamed title back. Rows
   represent active interactive user-owned top-level tasks and apply exact cwd
   matching for project scope. Archived, structured subagent/review/compact,
   memory, host-created internal, and non-interactive `exec` carriers are
@@ -575,22 +616,31 @@ or expose write controls.
 - A legacy request with one exact non-empty `session_id` is a bounded detail
   read, not a fan-out summary scan. It may use up to a 4 MiB primary head and a
   512 KiB tail within the unchanged aggregate request budget so large Codex
-  JSONL wrappers do not hide early user/tool events beyond the summary window.
-  This bounded detail remains the source for sampled process items such as
-  thinking, tool calls, and skill calls; it is not the completeness contract
-  for user-facing conversation messages.
+  JSONL wrappers do not hide early events beyond the summary window. This
+  bounded detail is a fast initial sample only; it is not the completeness
+  contract for any selected-session content kind.
 - `session.listLocalSessionMessages` is the read-only, selected-session
-  completeness path for user messages and final Agent replies. It accepts the
+  completeness path for user messages, final Agent replies, process thinking,
+  tool calls, and explicit skill calls. It accepts the
   same authorized-root, agent, and project context plus one stable `session_id`.
   A continuation sends the opaque `cursor` and matching `source_revision`.
-  The response contains only `user_message` and `agent_reply` content items;
-  thinking, tool calls, tool results, progress events, and mirrored Codex
-  `event_msg` copies are excluded. Host-injected user-role blocks such as
+  The response contains `user_message`, `agent_reply`, `thinking`, `tool_call`,
+  and `skill_call` content items. Tool-result/output records, non-message
+  lifecycle envelopes, and mirrored Codex `event_msg` copies are excluded.
+  Host-injected user-role blocks such as
   recommended plugin/app/skill catalogs and runtime instruction envelopes are
   excluded from message counts, excerpts, inferred titles, and detail pages.
   Codex goal context is normalized to its user-authored `<objective>` text so a
   goal-setting message remains visible; repeated internal reinjection of the
   unchanged active goal is collapsed until the objective changes.
+- `agent_reply` is completion-scoped, not merely assistant-role-scoped.
+  Explicit lifecycle and content-block evidence takes precedence over the
+  outer assistant role: commentary/progress, reasoning/thinking blocks,
+  tool-bearing assistant text, tool-loop finishes, truncation, interruption,
+  and errors are process `thinking`; only the terminal answer text is an
+  `agent_reply`. Tool calls remain independent `tool_call` items. Legacy
+  records without an explicit completion marker may retain assistant text as a
+  reply only when the record has no tool or non-final lifecycle evidence.
 - Message pages default to 40 items and allow at most 100. Each request scans at
   most 32 MiB of the fixed transcript snapshot and normally returns at most
   2 MiB of message text. A single larger final message is returned intact on
@@ -605,12 +655,17 @@ or expose write controls.
   page. Responses also report `scanned_bytes`, `scanned_through_bytes`, and
   `snapshot_bytes` for local progress without exposing a raw path.
 - The native detail loader first obtains the bounded process sample, then
-  automatically consumes message pages to EOF and publishes every accepted
-  page. Cancellation and page failure retain already accepted messages and
-  expose retry. The detail view uses lazy rows and defaults its selected
+  automatically consumes selected-session pages to EOF and publishes every
+  accepted page. Cancellation and page failure retain already accepted items
+  and expose retry. The detail view uses lazy rows and defaults its selected
   filters to User and Agent Reply; Thinking, Tool, and Skill remain available
-  but unselected. Exact final-message counts replace the bounded preview counts
-  as pages arrive. Neither pages nor merged detail are persisted.
+  but unselected. Counts are displayed as lower bounds while paging and become
+  exact for all five kinds at EOF; the bounded detail sample is replaced rather
+  than merged into the complete page stream. For every supported Agent,
+  accepted detail also replaces the
+  matching in-memory list row's summary-safe metadata so later title changes
+  appear without retaining message content in the summary cache. Neither pages
+  nor merged detail are persisted.
 - `sort` accepts `recent`, `modified_at`, and `title`. `direction` accepts
   `asc` and `desc`; recent/modified time defaults descending and title defaults
   ascending.
@@ -637,6 +692,12 @@ or expose write controls.
   repeated cursor as no progress. While rejected candidates are being excluded,
   `total_matched_count` may decrease from an earlier candidate upper bound; at
   EOF it is the exact accepted total.
+- A configured root that cannot be opened or read remains visible in root
+  diagnostics. When no stronger safety-budget limitation applies, the response
+  reports `source_completeness=limited` with
+  `incomplete_reason=unreadable_source`; the native app exposes every blocker
+  and gap through an expandable diagnostics section instead of silently
+  showing only a prefix.
 - `include_content_items` defaults to `true` when omitted for compatibility.
   Summary/list clients send `false`; every returned row then has
   `content_included=false` and `content_items=[]` while retaining bounded title,
@@ -660,7 +721,8 @@ or expose write controls.
   Cancellation or a source-key/generation change retains accepted rows and
   rejects late successes and errors. Scope, search, sort, and
   global search project all loaded summaries in memory. At most one selected
-  row's bounded process sample and progressively paged final messages are held
+  row's bounded tool/skill sample and progressively paged conversation and
+  thinking messages are held
   in the bounded in-memory detail cache; neither summaries nor details persist
   raw session content.
 - When a session store has no parseable event timestamp, the service falls back
@@ -694,15 +756,46 @@ or expose write controls.
   responses, traces, writes, scripts, snapshots, and rollback commands are
   excluded.
 - Task Preflight first ranks cached effective skills against the task, includes
-  at most 24 candidates, and blocks confirmation when the estimated request
-  exceeds the 12,000-token safety budget (in addition to the provider profile
-  limit).
+  every selected effective loaded skill in the provider request, and estimates
+  4,096 tokens for the structured provider output. The estimate is used for
+  preview and cost guidance; it is not a hard generation stop. A confirmed
+  Task Preflight request allows up to 8,000 output tokens so an already-sent
+  input is not wasted by an estimate boundary. Task Preflight does not reject
+  or reduce that complete request using the app's preview safety threshold or
+  configured single-request token budget; provider/model hard limits can still
+  fail the request explicitly. Other LLM actions retain their configured
+  request and estimated output limits. The prompt
+  requires compact JSON with at most three Agent candidates, three skill
+  candidates, two reasons per candidate, four readiness signals, three gaps,
+  three blockers, and 160 characters per explanatory prose value.
+- The confirmation surface presents the destination, complete-skill count,
+  input/output/total token estimates, and estimated cost rather than rendering
+  the complete request inline. After an attempted send, the current app session
+  keeps the complete redacted request and complete untrusted provider response
+  in its in-memory Task Preflight history, with date filtering (defaulting to
+  the latest seven calendar days), pagination, copy, and complete-detail views.
+  This history is not persisted and is cleared when the app exits.
+- Task Preflight provider transport uses the existing 10-minute LLM request
+  ceiling, and the native operation timer leaves a short grace interval for the
+  service to return and decode its terminal response. This avoids cancelling a
+  complete, already-sent skill inventory at the older five-minute boundary.
+- Prompt construction for other Agent Copilot LLM actions includes the complete
+  available finding and conflict collections rather than silently applying a
+  small item-count prefix. Provider/model hard context limits remain explicit
+  request failures rather than silent data omission.
 - A successful HTTP transport is not sufficient for a successful Task
   Preflight. The provider output must be valid JSON with the required business
-  result sections; otherwise prompt-run and provider-call metadata use
-  `parse_failed` with `response_schema_invalid`. Provider metadata timestamps
-  are epoch milliseconds; plausible legacy epoch-second records are normalized
-  on read.
+  result sections. When the provider reports that it stopped at its output-token
+  limit before returning complete JSON, prompt-run and provider-call metadata
+  use `parse_failed` with `response_truncated`; other missing or invalid result
+  schemas use `parse_failed` with `response_schema_invalid`. Provider metadata
+  timestamps are epoch milliseconds; plausible legacy epoch-second records are
+  normalized on read.
+- The confirmed response may return the untrusted Task Preflight task and draft
+  to the native client for copy-only use in the current app session. Persisted
+  prompt-run rows retain diagnostic metadata only for this action: `task` and
+  `draft_output` carry no value. Service startup nulls those two fields in
+  legacy Task Preflight rows without changing unrelated prompt-run content.
 
 ## Environment Overrides
 

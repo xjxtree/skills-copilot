@@ -88,6 +88,11 @@ struct LocalizationModelTests {
             "Sidecar timeout messages from stored history should be localized."
         )
         try expectEqual(
+            UIStrings.localizedServiceMessage("response_truncated: Provider stopped Task Preflight output at the configured output-token limit before the JSON result was complete."),
+            "response_truncated: 提供方在达到输出 token 上限时停止了任务 Preflight，JSON 结果尚未完整返回。",
+            "Task Preflight output-limit failures should preserve the stable code and localize recovery context."
+        )
+        try expectEqual(
             ServiceClient.ClientError.processTimedOut.localizedDescription,
             "服务调用超时：sidecar 未在限定时间内返回完整响应。",
             "Sidecar timeout errors should use the selected app language."

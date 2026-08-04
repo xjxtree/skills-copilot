@@ -354,8 +354,8 @@ struct SkillStoreTests {
         try await runCase("taskCockpitHistoryStaysInCurrentSessionOnly") {
             try await taskCockpitHistoryStaysInCurrentSessionOnly()
         }
-        try await runCase("taskCockpitHistoryKeepsNewestTwelveRecords") {
-            try await taskCockpitHistoryKeepsNewestTwelveRecords()
+        try await runCase("taskCockpitHistoryKeepsAllSessionRecords") {
+            try await taskCockpitHistoryKeepsAllSessionRecords()
         }
         try await runCase("newStoreDoesNotRestoreTaskCockpitHistory") {
             try await newStoreDoesNotRestoreTaskCockpitHistory()
@@ -723,7 +723,18 @@ struct SkillStoreTests {
                   case .loaded(let detail) = store.selectedLocalSessionDetailState else { return false }
             return detail.contentItems.map(\.text) == ["FRESH ALPHA DETAIL"]
         }
-        try expectEqual(store.localSessionPreviewResult, summaryResult, "Accepted raw detail should remain solely in the bounded detail cache.")
+        guard let refreshedSummary = store.localSessionPreviewResult.sessionRows.first(where: { $0.id == summary.id }) else {
+            throw NativeModelTestFailure(description: "The accepted detail should keep its summary row reachable.")
+        }
+        try expectEqual(refreshedSummary.title, "Renamed repository CI", "A fresh detail title should replace the stale list title.")
+        try expectFalse(refreshedSummary.contentIncluded, "Accepted raw detail must remain solely in the bounded detail cache.")
+        try expectEqual(refreshedSummary.contentItems.count, 0, "The refreshed summary must not retain raw detail messages.")
+        try expectEqual(
+            store.localSessionPreviewResult.sessionRows.filter { $0.id != summary.id },
+            summaryResult.sessionRows.filter { $0.id != summary.id },
+            "Detail reconciliation should not mutate unrelated session summaries."
+        )
+        let refreshedSummaryResult = store.localSessionPreviewResult
 
         fake.releaseBlockedResponse()
         try await waitUntil("The old detail response should complete after release.") {
@@ -734,7 +745,7 @@ struct SkillStoreTests {
             throw NativeModelTestFailure(description: "The current detail generation should remain loaded.")
         }
         try expectEqual(acceptedDetail.contentItems.map(\.text), ["FRESH ALPHA DETAIL"], "Late old detail must not replace the accepted cache entry.")
-        try expectEqual(store.localSessionPreviewResult, summaryResult, "Late old detail must not mutate published summary state.")
+        try expectEqual(store.localSessionPreviewResult, refreshedSummaryResult, "Late old detail must not mutate published summary state.")
         try expectFalse(store.localSessionPreviewResult.sessionRows.contains { row in
             row.contentItems.contains { $0.text == "Bounded alpha detail" }
         }, "Late old raw content must not be retained in the published preview.")
@@ -3453,12 +3464,12 @@ struct SkillStoreTests {
         try expectFalse(result?.safetyFlags.cloudSyncEnabled ?? true, "Task cockpit must not sync cloud data.")
         try expectFalse(result?.safetyFlags.telemetryEnabled ?? true, "Task cockpit must not emit telemetry.")
         try expectFalse(store.isBuildingTaskCockpit, "Task cockpit should reset loading state.")
-        try expectEqual(store.taskCockpitOperationState.timeoutSeconds, 300, "Task cockpit should use a five minute UI timeout by default.")
+        try expectEqual(store.taskCockpitOperationState.timeoutSeconds, 620, "Task cockpit should leave UI grace beyond the ten-minute provider timeout.")
 
         let calls = fake.calls()
         try expectContains(calls, "llm.previewPrompt", "Task cockpit should prepare a provider prompt preview.")
         try expectContains(calls, "llm.confirmPromptAndSend", "Task cockpit should send through the confirmation-gated provider path.")
-        try expectContains(calls, "\"timeout_ms\":300000", "Task cockpit provider send should use a five minute request timeout.")
+        try expectContains(calls, "\"timeout_ms\":600000", "Task cockpit provider send should use a ten-minute request timeout.")
         try expectContains(calls, "\"request_kind\":\"task_cockpit\"", "Task cockpit should use the task_cockpit prompt action.")
         try expectContains(calls, "\"task_text\":\"Prepare local release audit work.\"", "Task cockpit should send task text.")
         try expectContains(calls, "\"agents\":[\"claude-code\"]", "Task cockpit should pass the selected agent scope.")
@@ -3513,10 +3524,12 @@ struct SkillStoreTests {
         try expectEqual(store.taskCockpitHistory.first?.agentIDs, ["claude-code"], "Session history should preserve the full agent scope.")
         try expectEqual(store.taskCockpitHistory.first?.result.summary.recommendedSkillName, "Beta", "Session history should retain the full recommendation result.")
         try expectEqual(store.taskCockpitHistory.first?.operationState.phase, .completed, "Session history should retain the completed operation state.")
+        try expectFalse(store.taskCockpitHistory.first?.promptPreview?.promptPreview?.isEmpty ?? true, "Session history should retain the complete redacted request in memory.")
+        try expectFalse(store.taskCockpitHistory.first?.providerOutput?.isEmpty ?? true, "Session history should retain the complete provider response in memory.")
         try expectEqual(store.selectedTaskCockpitHistoryID, store.taskCockpitHistory.first?.id, "The latest session record should remain selected.")
     }
 
-    private func taskCockpitHistoryKeepsNewestTwelveRecords() async throws {
+    private func taskCockpitHistoryKeepsAllSessionRecords() async throws {
         let fake = try FakeServiceScript()
         defer { fake.cleanup() }
         fake.activate(scenario: "prompt-ready")
@@ -3532,20 +3545,21 @@ struct SkillStoreTests {
             try await previewAndConfirmTaskCockpit(store)
         }
 
-        let expectedTasks = Array(submittedTasks.dropFirst().reversed())
+        let expectedTasks = Array(submittedTasks.reversed())
         try expectEqual(
             store.taskCockpitHistory.count,
-            12,
-            "Session history should retain exactly twelve successful results."
+            13,
+            "Session history should retain every successful result; paging is a presentation concern."
         )
         try expectEqual(
             store.taskCockpitHistory.map(\.displayTask),
             expectedTasks,
-            "Session history should remain newest-first after evicting the oldest result."
+            "Session history should remain newest-first without silently evicting older results."
         )
-        try expectFalse(
+        try expectEqual(
             store.taskCockpitHistory.contains { $0.displayTask == submittedTasks[0] },
-            "The thirteenth result should evict the oldest session record."
+            true,
+            "The thirteenth result must not evict the oldest session record."
         )
         try expectEqual(
             store.selectedTaskCockpitHistoryID,
@@ -3796,11 +3810,16 @@ struct SkillStoreTests {
         try expectFalse(store.isBuildingTaskCockpit, "Timed-out task cockpit should release the loading state.")
         try expectEqual(store.taskCockpitOperationState.canRetry, true, "Timed-out task cockpit should expose retry.")
         try expectContains(store.taskCockpitResult?.fallbackReason, "did not finish", "Timeout should produce a visible fallback reason.")
+        try expectEqual(store.taskCockpitHistory.count, 1, "A confirmed send that times out should remain in session history.")
+        try expectEqual(store.taskCockpitHistory.first?.operationState.phase, .timedOut, "Timeout history should preserve the terminal phase.")
+        try expectContains(store.taskCockpitHistory.first?.promptPreview?.promptPreview, "Task preflight", "Timeout history should retain the complete redacted request.")
+        try expectNil(store.taskCockpitHistory.first?.providerOutput, "Timeout history should not invent a provider response.")
 
         fake.setScenario("prompt-ready")
         try await previewAndConfirmTaskCockpit(store)
         try expectEqual(store.taskCockpitResult?.summary.recommendedSkillName, "Beta", "Retry should load the fresh cockpit result.")
         try expectEqual(store.taskCockpitOperationState.phase, .completed, "Retry success should replace the timeout state.")
+        try expectEqual(store.taskCockpitHistory.count, 2, "Retry success should be added without evicting the timed-out send.")
 
         await slowBuild.value
         try expectEqual(store.taskCockpitResult?.summary.recommendedSkillName, "Beta", "Late slow response must not overwrite the retry result.")
@@ -3838,11 +3857,16 @@ struct SkillStoreTests {
         try expectEqual(store.taskCockpitOperationState.phase, .cancelled, "Cancel should expose a visible cancelled state.")
         try expectEqual(store.taskCockpitOperationState.canRetry, true, "Cancelled task cockpit should expose retry.")
         try expectEqual(store.taskCockpitResult?.fallbackReason, UIStrings.taskCockpitCancelled, "Cancel should produce localized recovery metadata.")
+        try expectEqual(store.taskCockpitHistory.count, 1, "A confirmed send cancelled by the user should remain in session history.")
+        try expectEqual(store.taskCockpitHistory.first?.operationState.phase, .cancelled, "Cancelled history should preserve the terminal phase.")
+        try expectContains(store.taskCockpitHistory.first?.promptPreview?.promptPreview, "Task preflight", "Cancelled history should retain the complete redacted request.")
+        try expectNil(store.taskCockpitHistory.first?.providerOutput, "Cancelled history should not invent a provider response.")
 
         fake.setScenario("prompt-ready")
         try await previewAndConfirmTaskCockpit(store)
         try expectEqual(store.taskCockpitResult?.summary.recommendedSkillName, "Beta", "Retry after cancel should load the cockpit result.")
         try expectEqual(store.taskCockpitOperationState.phase, .completed, "Retry success should replace the cancelled state.")
+        try expectEqual(store.taskCockpitHistory.count, 2, "Retry success should be added without evicting the cancelled send.")
 
         await slowBuild.value
         try expectEqual(store.taskCockpitResult?.summary.recommendedSkillName, "Beta", "Late cancelled response must not overwrite the retry result.")

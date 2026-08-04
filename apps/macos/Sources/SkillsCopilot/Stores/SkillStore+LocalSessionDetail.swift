@@ -40,9 +40,6 @@ extension SkillStore {
                 }
                 return
             }
-            let sampledProcessItems = detail.contentItems.filter {
-                !matchesFinalSessionMessage($0.kind)
-            }
             var accumulator = ListPageAccumulator<LocalSessionContentItem>()
             accumulator.begin(.all)
             var cursor: String?
@@ -68,14 +65,9 @@ extension SkillStore {
                 }
                 cursor = page.nextCursor
                 sourceRevision = page.sourceRevision
-                let finalMessages = accumulator.items
-                let mergedItems = mergeLocalSessionDetailItems(
-                    finalMessages: finalMessages,
-                    sampledProcessItems: sampledProcessItems
-                )
                 let mergedDetail = detail.replacingContentItems(
-                    mergedItems,
-                    exactFinalMessages: finalMessages
+                    accumulator.items,
+                    countsComplete: !page.hasMore
                 )
                 guard localSessionCache.publishDetailProgress(
                     mergedDetail,
@@ -83,7 +75,10 @@ extension SkillStore {
                     key: key,
                     generation: generation
                 ) else { return }
-                if selectedLocalSessionID == sessionID {
+                if let reconciled = localSessionCache.successfulSnapshot(for: source),
+                   reconciled.result != localSessionPreviewResult {
+                    publishReconciledLocalSessionSummary(reconciled)
+                } else if selectedLocalSessionID == sessionID {
                     synchronizeSelectedLocalSessionDetailState()
                 }
                 guard page.hasMore else { break }
@@ -110,28 +105,11 @@ extension SkillStore {
         }
     }
 
-    private func matchesFinalSessionMessage(_ kind: LocalSessionContentKind) -> Bool {
-        kind == .userMessage || kind == .agentReply
+    private func publishReconciledLocalSessionSummary(_ snapshot: LocalSessionSnapshot) {
+        guard activeLocalSessionSnapshotKey == snapshot.key else { return }
+        localSessionLoadState = localSessionCache.summaryStates[snapshot.key] ?? .fresh(snapshot)
+        localSessionPreviewResult = snapshot.result
+        synchronizeSelectedLocalSessionDetailState()
     }
 
-    private func mergeLocalSessionDetailItems(
-        finalMessages: [LocalSessionContentItem],
-        sampledProcessItems: [LocalSessionContentItem]
-    ) -> [LocalSessionContentItem] {
-        (finalMessages + sampledProcessItems)
-            .enumerated()
-            .sorted { left, right in
-                switch (left.element.timestamp, right.element.timestamp) {
-                case let (leftTime?, rightTime?) where leftTime != rightTime:
-                    return leftTime < rightTime
-                case (nil, .some):
-                    return false
-                case (.some, nil):
-                    return true
-                default:
-                    return left.offset < right.offset
-                }
-            }
-            .map(\.element)
-    }
 }

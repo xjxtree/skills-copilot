@@ -220,6 +220,7 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
     let evidenceRefs: [String]
     let contentIncluded: Bool
     let contentItems: [LocalSessionContentItem]
+    let countsComplete: Bool
 
     enum CodingKeys: String, CodingKey {
         case id
@@ -315,6 +316,7 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
         contentItems = try container.decodeIfPresent([LocalSessionContentItem].self, forKey: .contentItems)
             ?? container.decodeIfPresent([LocalSessionContentItem].self, forKey: .contentItemsAlt)
             ?? []
+        countsComplete = false
     }
 
     init(
@@ -337,7 +339,8 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
         contentHash: String,
         evidenceRefs: [String],
         contentIncluded: Bool,
-        contentItems: [LocalSessionContentItem]
+        contentItems: [LocalSessionContentItem],
+        countsComplete: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -359,6 +362,7 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
         self.evidenceRefs = evidenceRefs
         self.contentIncluded = contentIncluded
         self.contentItems = contentItems
+        self.countsComplete = countsComplete
     }
 
     var summaryOnly: LocalSessionPreviewRow {
@@ -382,17 +386,21 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
             contentHash: contentHash,
             evidenceRefs: evidenceRefs,
             contentIncluded: false,
-            contentItems: []
+            contentItems: [],
+            countsComplete: countsComplete
         )
     }
 
     func replacingContentItems(
         _ items: [LocalSessionContentItem],
-        exactFinalMessages: [LocalSessionContentItem]
+        countsComplete: Bool
     ) -> LocalSessionPreviewRow {
-        let exactUserCount = exactFinalMessages.filter { $0.kind == .userMessage }.count
-        let exactFinalCount = exactFinalMessages.count
-        let sampledThinkingCount = items.filter { $0.kind == .thinking }.count
+        let exactUserCount = items.filter { $0.kind == .userMessage }.count
+        let exactMessageCount = items.filter {
+            $0.kind == .userMessage || $0.kind == .agentReply || $0.kind == .thinking
+        }.count
+        let exactToolCount = items.filter { $0.kind == .toolCall }.count
+        let exactSkillCount = items.filter { $0.kind == .skillCall }.count
         return LocalSessionPreviewRow(
             id: id,
             title: title,
@@ -407,13 +415,14 @@ struct LocalSessionPreviewRow: Decodable, Hashable, Identifiable {
             excerpt: excerpt,
             excerptCharCount: excerptCharCount,
             userMessageCount: exactUserCount,
-            totalMessageCount: exactFinalCount + sampledThinkingCount,
-            toolCallCount: toolCallCount,
-            skillCallCount: skillCallCount,
+            totalMessageCount: exactMessageCount,
+            toolCallCount: exactToolCount,
+            skillCallCount: exactSkillCount,
             contentHash: contentHash,
             evidenceRefs: evidenceRefs,
             contentIncluded: true,
-            contentItems: items
+            contentItems: items,
+            countsComplete: countsComplete
         )
     }
 }

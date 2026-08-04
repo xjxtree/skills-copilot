@@ -10,21 +10,61 @@ struct LocalSessionPreviewModelTests {
         try previewDecodesCandidateAndContentCompatibility()
         try previewMergesPaginatedRows()
         try previewMergesSkillUsageAcrossPages()
-        try messagePageDecodesExactFinalMessages()
+        try messagePageDecodesExactMessagesAndThinking()
+        try completedPagedDetailReplacesSampledCountsWithExactCounts()
         try defaultDetailFiltersShowOnlyConversationMessages()
         try unavailableKeepsAuthorizationRequired()
         try filteredEmptyCopyExplainsHiddenLocalSessionCount()
         try skillCallNamesDriveFollowUpActions()
     }
 
-    private func messagePageDecodesExactFinalMessages() throws {
-        let payload = #"{"generated_by":"local-v2.99","session_id":"session-large","content_items":[{"id":"user-1","kind":"user_message","title":"User","text":"Set the goal","char_count":12},{"id":"agent-1","kind":"agent_reply","title":"Agent","text":"Goal accepted","char_count":13}],"returned_count":2,"total_count":null,"has_more":true,"next_cursor":"v1:message-page-2","source_revision":"sha256:messages","source_completeness":"enumerable","incomplete_reason":null,"scanned_bytes":33554432,"scanned_through_bytes":33554432,"snapshot_bytes":600000000}"#
+    private func messagePageDecodesExactMessagesAndThinking() throws {
+        let payload = #"{"generated_by":"local-v2.99","session_id":"session-large","content_items":[{"id":"user-1","kind":"user_message","title":"User","text":"Set the goal","char_count":12},{"id":"thinking-1","kind":"thinking","title":"Thinking","text":"Inspecting state","char_count":16},{"id":"tool-1","kind":"tool_call","title":"Tool","text":"read config","char_count":11},{"id":"skill-1","kind":"skill_call","title":"Skill: audit","text":"audit","char_count":5},{"id":"agent-1","kind":"agent_reply","title":"Agent","text":"Goal accepted","char_count":13}],"returned_count":5,"total_count":null,"has_more":true,"next_cursor":"v1:message-page-2","source_revision":"sha256:messages","source_completeness":"enumerable","incomplete_reason":null,"scanned_bytes":33554432,"scanned_through_bytes":33554432,"snapshot_bytes":600000000}"#
         let page = try JSONDecoder().decode(LocalSessionMessagePageResult.self, from: Data(payload.utf8))
         try expectEqual(page.sessionID, "session-large", "Message page should bind to the selected session.")
-        try expectEqual(page.contentItems.map(\.kind), [.userMessage, .agentReply], "Message pages should decode user-facing conversation kinds.")
+        try expectEqual(page.contentItems.map(\.kind), [.userMessage, .thinking, .toolCall, .skillCall, .agentReply], "Message pages should decode every pageable conversation and process kind.")
         try expectEqual(page.nextCursor, "v1:message-page-2", "Message page should decode its continuation cursor.")
         try expectEqual(page.listPage.sourceCompleteness, .enumerable, "Message page should report an enumerable fixed snapshot.")
         try expectEqual(page.snapshotBytes, 600_000_000, "Message page should retain its fixed snapshot size.")
+    }
+
+    private func completedPagedDetailReplacesSampledCountsWithExactCounts() throws {
+        let summary = LocalSessionPreviewRow(
+            id: "complete-counts",
+            title: "Complete counts",
+            sourceKind: "authorized-local-session",
+            scope: "all",
+            agent: "codex",
+            projectRoot: nil,
+            redactedPath: "$HOME/session.jsonl",
+            modifiedAt: nil,
+            startedAt: nil,
+            endedAt: nil,
+            excerpt: "",
+            excerptCharCount: 0,
+            userMessageCount: 1,
+            totalMessageCount: 2,
+            toolCallCount: 240,
+            skillCallCount: 240,
+            contentHash: "hash",
+            evidenceRefs: [],
+            contentIncluded: false,
+            contentItems: []
+        )
+        let items = [
+            LocalSessionContentItem(id: "u", kind: .userMessage, title: "User", text: "goal"),
+            LocalSessionContentItem(id: "t", kind: .thinking, title: "Thinking", text: "plan"),
+            LocalSessionContentItem(id: "tool-1", kind: .toolCall, title: "Tool", text: "one"),
+            LocalSessionContentItem(id: "tool-2", kind: .toolCall, title: "Tool", text: "two"),
+            LocalSessionContentItem(id: "skill", kind: .skillCall, title: "Skill", text: "audit"),
+            LocalSessionContentItem(id: "a", kind: .agentReply, title: "Agent", text: "done")
+        ]
+        let detail = summary.replacingContentItems(items, countsComplete: true)
+        try expectEqual(detail.userMessageCount, 1, "Completed paging should publish the exact user count.")
+        try expectEqual(detail.totalMessageCount, 3, "Completed paging should count user, thinking, and agent messages exactly.")
+        try expectEqual(detail.toolCallCount, 2, "Completed paging should replace the 240-row tool sample with the exact count.")
+        try expectEqual(detail.skillCallCount, 1, "Completed paging should replace the 240-row skill sample with the exact count.")
+        try expectEqual(detail.countsComplete, true, "Only a terminal page should mark sidebar counts as exact.")
     }
 
     private func defaultDetailFiltersShowOnlyConversationMessages() throws {

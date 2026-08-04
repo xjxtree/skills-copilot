@@ -58,6 +58,7 @@
         "agents": [
           "codex"
         ],
+        "separable_agents": [],
         "scope": "project"
       }
     ],

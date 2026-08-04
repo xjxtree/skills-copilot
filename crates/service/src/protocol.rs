@@ -39,6 +39,7 @@ pub const SUPPORTED_METHODS: &[&str] = &[
     "skillManager.listTools",
     "skillManager.search",
     "skillManager.listInstalled",
+    "skillManager.inspectLocalSource",
     "skillManager.previewInstall",
     "skillManager.applyInstall",
     "skillManager.previewRemove",

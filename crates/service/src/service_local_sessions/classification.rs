@@ -1,6 +1,5 @@
 use super::{
     is_hidden_local_session_record_type, is_image_placeholder_local_session_title,
-    is_json_non_message_type, is_json_thinking_type, is_json_tool_type,
     is_version_like_local_session_title, LocalSessionRecordClassification,
 };
 use serde_json::Value;
@@ -188,7 +187,7 @@ pub(super) fn local_session_type_name_classification(
     let normalized = record_type.to_ascii_lowercase().replace(['_', '-'], "");
     if is_hidden_local_session_record_type(record_type) || is_json_non_message_type(&normalized) {
         LocalSessionRecordClassification::Deny
-    } else if is_json_tool_type(&normalized) {
+    } else if is_json_tool_type(&normalized) || is_json_tool_result_type(&normalized) {
         LocalSessionRecordClassification::Tool
     } else if is_json_thinking_type(&normalized) {
         LocalSessionRecordClassification::Thinking
@@ -215,4 +214,129 @@ pub(super) fn local_session_role_classification(role: &str) -> LocalSessionRecor
         "system" | "developer" | "summary" => LocalSessionRecordClassification::Deny,
         _ => LocalSessionRecordClassification::Unproven,
     }
+}
+
+pub(super) fn local_session_phase_classification(
+    value: Option<&Value>,
+) -> LocalSessionRecordClassification {
+    let Some(value) = value else {
+        return LocalSessionRecordClassification::Missing;
+    };
+    let Some(phase) = value.as_str() else {
+        return LocalSessionRecordClassification::Unproven;
+    };
+    local_session_phase_name_classification(phase)
+}
+
+pub(super) fn local_session_phase_name_classification(
+    phase: &str,
+) -> LocalSessionRecordClassification {
+    let normalized = phase.to_ascii_lowercase().replace(['_', '-', ' '], "");
+    match normalized.as_str() {
+        "commentary" | "analysis" | "reasoning" | "thinking" | "progress" => {
+            LocalSessionRecordClassification::Thinking
+        }
+        "final" | "finalanswer" => LocalSessionRecordClassification::Assistant,
+        "" => LocalSessionRecordClassification::Missing,
+        _ => LocalSessionRecordClassification::Unproven,
+    }
+}
+
+pub(super) fn is_json_thinking_type(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "thinking"
+            | "thinkingtext"
+            | "reasoning"
+            | "reasoningtext"
+            | "thought"
+            | "analysis"
+            | "analysistext"
+            | "agentreasoning"
+            | "commentary"
+    )
+}
+
+pub(super) fn is_json_tool_type(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "tool" | "toolcall" | "tooluse" | "functioncall" | "customtoolcall"
+    )
+}
+
+pub(super) fn is_json_tool_result_type(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "toolresult" | "tooluseresult" | "tooluseerror" | "functionresult" | "customtoolcalloutput"
+    )
+}
+
+pub(super) fn json_session_has_nonfinal_process_signal(
+    map: &serde_json::Map<String, Value>,
+) -> bool {
+    map.values().any(json_value_has_nonfinal_process_signal)
+}
+
+fn json_value_has_nonfinal_process_signal(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(json_value_has_nonfinal_process_signal),
+        Value::Object(map) => {
+            for key in [
+                "stop_reason",
+                "stopReason",
+                "finish",
+                "finish_reason",
+                "finishReason",
+                "finish_details",
+                "finishDetails",
+            ] {
+                if let Some(value) = map.get(key) {
+                    if json_value_is_nonfinal_process_signal(value) {
+                        return true;
+                    }
+                }
+            }
+            map.values().any(json_value_has_nonfinal_process_signal)
+        }
+        _ => false,
+    }
+}
+
+fn json_value_is_nonfinal_process_signal(value: &Value) -> bool {
+    match value {
+        Value::String(text) => is_nonfinal_process_signal_text(text),
+        Value::Object(map) => map.values().any(json_value_is_nonfinal_process_signal),
+        Value::Array(items) => items.iter().any(json_value_is_nonfinal_process_signal),
+        _ => false,
+    }
+}
+
+fn is_nonfinal_process_signal_text(value: &str) -> bool {
+    let normalized = value.to_ascii_lowercase().replace(['_', '-', ' '], "");
+    matches!(
+        normalized.as_str(),
+        "tool"
+            | "tooluse"
+            | "toolcall"
+            | "toolcalls"
+            | "functioncall"
+            | "functioncalls"
+            | "requiresaction"
+            | "length"
+            | "maxtokens"
+            | "maxoutputtokens"
+            | "error"
+            | "aborted"
+            | "cancelled"
+            | "canceled"
+            | "interrupted"
+            | "other"
+    )
+}
+
+fn is_json_non_message_type(normalized: &str) -> bool {
+    matches!(
+        normalized,
+        "developer" | "system" | "summary" | "compaction" | "context" | "metadata"
+    )
 }

@@ -1,0 +1,7 @@
+{
+  "id": "fixture-skill-manager-inspect-local-source",
+  "method": "skillManager.inspectLocalSource",
+  "params": {
+    "source_path": "/tmp/skills-copilot-local-package"
+  }
+}

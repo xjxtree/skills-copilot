@@ -2,7 +2,7 @@ import Foundation
 
 private enum LLMPromptRequestTimeouts {
     static let standardSendMS = 600_000
-    static let taskCockpitSendMS = 300_000
+    static let taskCockpitSendMS = 600_000
 }
 
 extension ServiceClient {

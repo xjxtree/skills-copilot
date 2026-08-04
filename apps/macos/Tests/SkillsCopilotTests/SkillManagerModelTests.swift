@@ -12,6 +12,7 @@ struct SkillManagerModelTests {
         try searchRecordSeparatesNetworkBlockedFromEmptyResults()
         try methodSpecificPageMetadataRejectsCrossMethodSemantics()
         try installedSourceOwnershipDecodesIndependentlyFromInventoryDiscovery()
+        try localSourceInspectionBuildsDirectInstallCandidates()
         try localArchiveImportPreviewDecodes()
         try managerInventoryConsumesItsMatchingCatalogSource()
         try inventoryExcludesReadOnlyPluginCacheSources()
@@ -19,6 +20,7 @@ struct SkillManagerModelTests {
         try installedAppLibrarySourceRetainsCleanupIdentity()
         try nestedSharedLocalSourceSupportsZipUpdate()
         try sharedLocalSourceIncludesEveryScannedConsumer()
+        try inventoryUsesServiceSeparableTargetsForPartialRemoval()
         try inventoryKeepsDisabledAgentsInstalledAndRetainsPhysicalIdentity()
         try externalLocalSourceHasNoArchiveUpdateTarget()
         try duplicateInstalledRowsMergeAgentLinks()
@@ -295,6 +297,65 @@ struct SkillManagerModelTests {
         try expectNil(preview.instanceID, "A preview should not invent an imported catalog instance.")
     }
 
+    private func localSourceInspectionBuildsDirectInstallCandidates() throws {
+        let payload = """
+        {
+          "preview": {
+            "tool_id":"npx-skills",
+            "operation":"inspectLocalSource",
+            "command":["/usr/local/bin/npx","skills","add","/tmp/local-package","--list","--full-depth"],
+            "cwd":"/tmp/local-package",
+            "env":[],
+            "requires_confirmation":false,
+            "confirmed":false,
+            "network_required":false,
+            "network_allowed":true,
+            "will_run":false,
+            "preview_token":"inspect-token",
+            "summary":"Inspect local skills.",
+            "risks":[]
+          },
+          "output":{"status":"completed","exit_code":0,"stdout":"Found 2 skills","stderr":""},
+          "source_path":"<local-source>/local-package",
+          "source_revision":"sha256:fixture",
+          "skills":[
+            {"name":"alpha-skill","description":"Alpha local skill.","relative_path":"alpha/SKILL.md"},
+            {"name":"beta-skill","description":"Beta local skill.","relative_path":"nested/beta/SKILL.md"}
+          ]
+        }
+        """.data(using: .utf8)!
+
+        let inspection = try JSONDecoder().decode(
+            SkillManagerLocalSourceInspectionRecord.self,
+            from: payload
+        )
+        let selection = SkillManagerDirectLocalSource(
+            sourcePath: "/tmp/local-package",
+            inspection: inspection
+        )
+
+        try expectEqual(
+            selection.candidates.map(\.name),
+            ["alpha-skill", "beta-skill"],
+            "Every npx-validated local skill should become a direct-install candidate."
+        )
+        try expectEqual(
+            selection.candidates.map(\.sourcePath),
+            ["/tmp/local-package", "/tmp/local-package"],
+            "Direct install must keep the selected source directory instead of an app-library copy."
+        )
+        try expectEqual(
+            selection.displayPath,
+            "<local-source>/local-package",
+            "The service-provided redacted path should remain the display identity."
+        )
+        try expectEqual(
+            Set(selection.candidates.map(\.id)).count,
+            2,
+            "Multiple skills in one local package need stable distinct selection IDs."
+        )
+    }
+
     private func managerInventoryConsumesItsMatchingCatalogSource() throws {
         let items = SkillManagerInventoryBuilder.build(
             installed: [installedRecord(
@@ -457,6 +518,43 @@ struct SkillManagerModelTests {
         )
     }
 
+    private func inventoryUsesServiceSeparableTargetsForPartialRemoval() throws {
+        let installedPath = "/home/test/.agents/skills/shared-skill"
+        let catalogAgents = ["claude-code", "opencode", "codex", "openclaw", "pi"]
+        let items = SkillManagerInventoryBuilder.build(
+            installed: [installedRecord(
+                name: "shared-skill",
+                source: "owner/repository",
+                sourceKind: "manager",
+                agents: ["Claude Code", "Pi", "OpenCode", "Codex", "Hermes Agent", "OpenClaw"],
+                path: installedPath,
+                separableAgents: ["claude-code"]
+            )],
+            catalogSkills: catalogAgents.enumerated().map { index, agent in
+                catalogSkill(
+                    id: "shared-\(index)",
+                    agent: agent,
+                    name: "shared-skill",
+                    path: "\(installedPath)/SKILL.md"
+                )
+            },
+            localLibrarySkills: [],
+            scope: .global
+        )
+
+        try expectEqual(items.count, 1, "The manager row should remain one inventory item.")
+        try expectEqual(
+            items[0].missingDetachTargets(for: ["claude-code", "opencode", "codex", "openclaw"]),
+            ["opencode", "codex", "openclaw"],
+            "Direct shared-source consumers must block partial removal before a preview request is sent."
+        )
+        try expectEqual(
+            items[0].missingDetachTargets(for: ["claude-code"]),
+            [],
+            "An Agent whose link is the only loaded target remains valid for partial removal."
+        )
+    }
+
     private func inventoryKeepsDisabledAgentsInstalledAndRetainsPhysicalIdentity() throws {
         let installedPath = "/home/test/.agents/skills/shared-skill"
         let items = SkillManagerInventoryBuilder.build(
@@ -577,13 +675,15 @@ struct SkillManagerModelTests {
         source: String,
         sourceKind: String,
         agents: [String],
-        path: String
+        path: String,
+        separableAgents: [String]? = nil
     ) -> SkillManagerInstalledRecord {
         SkillManagerInstalledRecord(
             name: name,
             source: source,
             sourceKind: sourceKind,
             agents: agents,
+            separableAgents: separableAgents,
             scope: "global",
             path: path,
             raw: nil
