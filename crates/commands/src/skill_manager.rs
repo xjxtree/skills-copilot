@@ -33,7 +33,7 @@ pub use archive::{
     SkillManagerLocalArchiveImportRecord, SkillManagerLocalArchiveUpdateParams,
     SkillManagerLocalArchiveUpdateRecord,
 };
-#[cfg(test)]
+#[cfg(all(test, unix))]
 use local_source::inspect_local_source_with_executable;
 pub use local_source::{
     inspect_local_source_with_manager, SkillManagerInspectLocalSourceParams,
