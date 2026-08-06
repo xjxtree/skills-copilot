@@ -7,11 +7,8 @@ This file describes security and privacy boundaries.
 - Rust crates own product logic and policy decisions.
 - The native macOS app presents state and sends typed requests to the Rust stdio
   service.
-- Local agent files, skills, transcripts, LLM output, screenshots, and generated
-  reports are untrusted inputs.
-- Fixture smoke validation must not touch real user config. Real-local
-  validation may read the developer's real HOME and app data only when the
-  runbook explicitly calls for it.
+- Local agent files, skills, transcripts, LLM output, and generated reports are
+  untrusted inputs.
 
 ## Privacy Rules
 
@@ -24,12 +21,10 @@ This file describes security and privacy boundaries.
 - Provider calls made by Agent Copilot's optional AI features require user
   enablement, prompt preview, redaction, destination visibility, and explicit
   confirmation.
-- Raw transcripts, prompts, responses, traces, credentials, screenshots, and
-  reports must not persist secrets.
+- Raw transcripts, prompts, responses, traces, credentials, and reports must
+  not persist secrets.
 - Task Preflight task text and provider draft output are session-only. Its
-  persisted prompt-run row contains diagnostic metadata without those fields;
-  service startup also removes them from legacy Task Preflight rows without
-  changing unrelated prompt-run content.
+  persisted prompt-run row contains diagnostic metadata without those fields.
 - Task Preflight confirmation exposes a redacted request summary plus
   destination and token/cost estimates. The complete redacted request and
   complete untrusted response are available only from current-session memory
@@ -47,7 +42,7 @@ This file describes security and privacy boundaries.
 
 - Credentials must prefer Keychain.
 - Never write credentials to SQLite, project directories, logs, prompts,
-  response artifacts, screenshots, or reports.
+  response artifacts, or reports.
 - Provider Observability may show redacted metadata only for Agent Copilot's own
   optional AI requests. It must not expose raw secrets, infer usage from managed
   agent provider profiles, or add write/delete controls without a new scoped
@@ -100,26 +95,6 @@ This file describes security and privacy boundaries.
   per-Agent target exists, or complete external-manager uninstall; they never
   receive a ZIP replacement action. A direct source shared by selected and
   unselected Agents is never deleted by partial uninstall.
-- Developer ID signing, notarization, stapling, and optional post-staple ZIP
-  creation are explicit maintainer-only release actions. They require an
-  identity selected at release-build invocation and a named `notarytool`
-  Keychain profile; raw notarization credentials are not accepted. The scripts
-  never run from normal builds, never publish an artifact, and refuse to
-  overwrite an existing output ZIP.
 - Hidden apply/write paths, hidden task state, raw prompt/response/trace
-  persistence, public distribution automation, DMG creation, updater feeds,
-  and other ZIP creation/distribution work require explicit new scope.
-
-## Screen Capture
-
-- UI screenshots used during validation must capture only the full app window
-  and remain outside the repository.
-- Full desktop screenshots are forbidden.
-- If the macOS session is locked, cannot be confirmed interactive, or window
-  capture is blocked, report the canonical blocker in the task or pull request
-  instead of substituting fixture output.
-
-## Verification
-
-Use `pnpm check:privacy` before committing or pushing changes. Use `pnpm
-check:macos` for substantial user-visible, UI, or service-protocol changes.
+  persistence, public distribution automation, packaging, and updater feeds
+  require explicit new scope.

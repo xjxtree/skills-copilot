@@ -3,7 +3,6 @@ const smokeFlags = new Map([
   ["--fixture-data", "fixtureData"],
   ["--headless-sidecar", "headlessSidecar"],
   ["--keep-open", "keepOpen"],
-  ["--capture-window", "captureWindow"],
   ["--check-logs", "checkLogs"],
   ["--allow-stale-app", "allowStaleApp"],
 ]);
@@ -24,7 +23,6 @@ export function parseSmokeOptions(argv, env) {
       enabled.has("allowStaleApp") ||
       env.SKILLS_COPILOT_ALLOW_STALE_APP === "1",
     bundleOnly: enabled.has("bundleOnly"),
-    captureWindow: enabled.has("captureWindow"),
     checkLogs: enabled.has("checkLogs"),
     fixtureData: enabled.has("fixtureData"),
     headlessSidecar: enabled.has("headlessSidecar"),
@@ -39,7 +37,6 @@ export function parseSmokeOptions(argv, env) {
     const incompatible = [
       ["bundleOnly", "--bundle-only"],
       ["keepOpen", "--keep-open"],
-      ["captureWindow", "--capture-window"],
       ["checkLogs", "--check-logs"],
     ].find(([property]) => options[property]);
     if (incompatible) {

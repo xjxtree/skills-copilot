@@ -5,12 +5,11 @@ belongs in Rust crates; the UI presents state and sends typed requests.
 
 ## Goals
 
-- Inspect local agent sessions, skills, config snapshots, and validation
-  evidence.
+- Inspect local agent sessions, skills, and config snapshots.
 - Keep deterministic local analysis useful without default Agent Copilot
   provider calls.
-- Keep write, script, credential, cloud, telemetry, and release automation
-  surfaces narrow and explicit.
+- Keep write, script, credential, cloud, and telemetry surfaces narrow and
+  explicit.
 - Share the same Rust service contract across current and future UI shells.
 
 ## Non-Goals
@@ -106,20 +105,19 @@ entire UI.
 ### Raw Findings And User-Visible Issues
 
 - The catalog retains current rule-finding records for local audit, including
-  declaration-baseline warnings, collision-member records, local triage state,
+  declaration warnings, collision-member records, local triage state,
   and rule-tuning suppressions. Raw catalog totals therefore are not UI issue
   totals.
 - Rust owns the shared derived-finding policy used by health summaries and LLM
   prompt context. The native shell mirrors that policy for cached list/detail
   presentation: suppressions, reviewed/ignored triage, records without a
   current skill instance, and `name.collision` are excluded. Built-in
-  declaration-baseline findings are excluded at warning/information severity
+  declaration findings are excluded at warning/information severity
   but remain visible when raised to error/critical.
 - Multi-skill runtime collisions appear only through the independent conflict
   projection. Broken and unknown current catalog states remain navigable
   single-skill issues even when no rule finding is attached. Missing rows are
-  historical Deleted records and are excluded from the default All and Issues
-  projections.
+  excluded from the default All and Issues projections.
 - Runtime collision membership is limited to loaded, enabled instances that
   share an agent and an effective runtime namespace. Installed Codex plugin
   skills use a package-specific namespace; separate plugins do not collide
@@ -135,8 +133,7 @@ entire UI.
 - Sidebar totals, default filters, row/header badges, detail cards, refresh
   feedback, health summaries, and LLM related-finding context must use these
   current-skill projections instead of raw catalog counts. The explicit Deleted
-  filter is the only skill-list filter that shows general historical missing
-  rows.
+  filter is the only skill-list filter that shows missing rows.
 
 Skill Manager follows a skill-first cache model. Startup and explicit manual
 refresh load project/global package inventories; opening the panel and changing
@@ -179,24 +176,19 @@ successful.
 
 | Change | Add it here |
 | --- | --- |
-| New agent | `crates/adapters/src/<agent>/`, scanner/catalog tests, adapter docs |
-| New service method | `crates/service`, fixtures, `docs/service-protocol.md` |
+| New agent | `crates/adapters/src/<agent>/` and adapter docs |
+| New service method | `crates/service` and `docs/service-protocol.md` |
 | New local rule | `crates/ai-core` |
 | New macOS surface | `apps/macos` view/model/service patterns |
 | New provider behavior | Provider profile gate with preview/redaction/confirmation |
 
-## Compatibility
+## Codex Integration
 
-The displayed product name is Agent Copilot. Some module names, crate names,
-sidecar names, AX identifiers, environment variables, or legacy app-data ids may
-retain `SkillsCopilot` / `skills-copilot` compatibility where migration or
-fixtures require it.
-
-`codex` is likewise a stable adapter and protocol identity even when the
+`codex` is a stable adapter and protocol identity even when the
 desktop runtime is hosted by `ChatGPT.app`. The adapter and local-session
 service resolve one guarded `$CODEX_HOME`; neither assumes the former
 `Codex.app` bundle name. Codex skill discovery is filesystem-only: it reads
 verified native roots plus the manifest-declared skill roots of installed,
-versioned plugin copies and never calls the Codex runtime inventory API.
+enabled plugin copies and never calls the Codex runtime inventory API.
 Plugin files remain read-only, and installation stays isolated in the
 separately confirmed `skillManager.*` command path.

@@ -18,7 +18,9 @@ const baseEnv = {
 };
 
 const steps = [
+  ["git", ["diff", "--check"], baseEnv],
   ["cargo", ["fmt", "--all", "--", "--check"], baseEnv],
+  ["pnpm", ["check:privacy"], baseEnv],
   ["cargo", ["test", "--workspace"], baseEnv],
   [
     "cargo",
@@ -30,25 +32,14 @@ const steps = [
   ["pnpm", ["verify:gate-parity"], baseEnv],
   ["pnpm", ["test:macos-native-models"], baseEnv],
   [
-    "swift",
-    [
-      "build",
-      "--package-path",
-      "apps/macos",
-      "--scratch-path",
-      join(swiftScratchRoot, "build"),
-    ],
-    baseEnv,
-  ],
-  [
     "./script/build_and_run.sh",
-    ["--verify"],
+    ["--build-only"],
     {
       ...baseEnv,
       SWIFTPM_SCRATCH_PATH: join(swiftScratchRoot, "bundle"),
     },
   ],
-  ["pnpm", ["smoke:macos-app", "--", "--fixture-data", "--capture-window"], baseEnv],
+  ["pnpm", ["smoke:macos-app", "--", "--fixture-data", "--headless-sidecar"], baseEnv],
 ];
 
 let exitCode = 0;

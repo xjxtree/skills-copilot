@@ -13,12 +13,11 @@ configuration paths, session stores, or service wire identities.
   the project root.
 - `/etc/codex/skills` when present, as read-only diagnostics.
 - Project `.codex/config.toml` as read-only diagnostics.
-- One deterministic current version per installed plugin record whose
+- One deterministic active copy per installed plugin record whose
   `[plugins.<id>] enabled` value is explicitly `true` in
   `$CODEX_HOME/config.toml`. A missing entry and `enabled = false` both exclude
-  the package. The physical copy may live under
-  `$CODEX_HOME/plugins/cache/<marketplace>/<plugin>/<version>`, but that cache
-  directory is never a scan root. The adapter reads the copy's bounded regular
+  the package. The plugin cache directory is never a scan root. The adapter
+  reads the active copy's bounded regular
   `.codex-plugin/plugin.json` and scans only the safe relative root named by the
   manifest `skills` field; that root does not have to be named `skills`.
   Every valid skill below that declared root is part of the enabled plugin
@@ -30,11 +29,7 @@ must be absolute and lexically normalize beneath the active user home; otherwise
 the adapter falls back to `$HOME/.codex`.
 
 Codex product skill discovery is filesystem-only. The adapter does not start
-`codex app-server` and does not call `skills/list`; release validation may make
-a temporary read-only comparison without persisting runtime rows.
-When validating a running ChatGPT-hosted Codex session, the comparison must use
-that host bundle's Codex binary/version rather than an unrelated `codex` found
-on `PATH`; concurrently installed versions can publish different system skills.
+`codex app-server` and does not call `skills/list`.
 Plugin files are persisted installation state and appear in list, detail,
 analysis, and conflict projections with a plugin namespace, logical display
 path, and read-only package provenance; their physical cache path is hidden.
@@ -84,8 +79,3 @@ sync, or telemetry through the adapter.
 ChatGPT's Plugin Directory is not Agent Copilot's Skill Manager. The latter is
 the separate `skillManager.*` path backed by an explicit manager CLI preview,
 target visibility, telemetry-off environment, and confirmation.
-
-## Fixtures
-
-Codex fixtures live under `fixtures/codex/` and cover valid and malformed skill
-frontmatter plus read-only root behavior.

@@ -20,11 +20,10 @@ This file summarizes the LLM/provider boundary.
   credential access, cloud sync, telemetry, or raw prompt/response persistence.
 - Task Preflight task text and untrusted provider output are returned for
   copy-only use in the current app session and are excluded from persisted
-  prompt-run rows. Startup removes those fields from legacy Task Preflight rows
-  while retaining redacted diagnostic metadata.
+  prompt-run rows.
 - Task Preflight confirmation shows a request summary and token/cost estimates.
   After a send attempt, its complete redacted request and complete untrusted
-  response remain available through the paged, date-filtered in-memory history
+  response remain available through the paged, date-filtered in-memory view
   until the app exits; neither value is written to disk.
 - Agent Copilot prompt builders include the complete available effective-skill,
   finding, and conflict inputs for their scoped action. They do not silently
@@ -36,12 +35,11 @@ This file summarizes the LLM/provider boundary.
 
 ## Local Signals
 
-- Agent/session/skill/config summaries should prefer local typed service data
-  and fixture-backed evidence.
+- Agent/session/skill/config summaries should prefer local typed service data.
 - Skill usage summaries count explicit local invocation markers, not ordinary
   skill-name mentions.
 - Provider Observability may display read-only redacted metadata for Agent
-  Copilot AI requests, including model-task history rows, but must not add
+  Copilot AI requests, including model-task match rows, but must not add
   write/delete controls without an explicitly scoped safety review.
 
 ## Non-Goals

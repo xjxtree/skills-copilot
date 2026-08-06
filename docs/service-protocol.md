@@ -25,9 +25,8 @@ Error response:
 {"id":"req-1","ok":false,"error":{"code":"unknown_method","message":"unknown method: x"}}
 ```
 
-The stdio transport may change in the future, but method names, payloads,
-fixtures, and stable error codes must remain synchronized with protocol drift
-verification.
+Method names, payloads, and stable error codes must stay synchronized with the
+typed Rust protocol.
 
 ## Protocol Rules
 
@@ -44,8 +43,6 @@ verification.
 - App-local metadata writes must be redacted.
 - Adapter config writes must use the guarded paths documented in
   `docs/adapters/agent-adapters.md`.
-- Service method changes must update fixtures and pass
-  `pnpm verify:service-protocol-drift`.
 
 ## Authorized File Watch Plan
 
@@ -82,8 +79,8 @@ cache.
 
 ## Config Consistency
 
-Protocol version 2 makes direct config saves and snapshot rollback confirmations
-conditional on the exact local state that the client reviewed.
+Direct config saves and snapshot rollback confirmations are conditional on the
+exact local state that the client reviewed.
 
 - `config.readClaudeSettings` and every row from `config.readAgentConfig`
   include an opaque tagged `revision`. The revision is `sha256:` plus a
@@ -98,7 +95,7 @@ conditional on the exact local state that the client reviewed.
   catalog initialization, snapshot creation, or a target write. An initial
   mismatch returns the stable `config_conflict` error with no filesystem
   entries created; either mismatch leaves the external bytes, catalog, and
-  snapshot history unchanged.
+  snapshots unchanged.
 - `snapshot.previewRollback` returns `current_revision` and an opaque
   `preview_token`. The token binds the snapshot id, target, a digest of the
   snapshot content, and the current target revision; it does not expose the
@@ -260,13 +257,12 @@ or expose write controls.
 - Bounded responses expose returned-vs-total metadata where the protocol
   supports it (`total_count` / `returned_count` or
   `total_*_count` / `returned_*_count`, plus `truncated`) so clients do not
-  mistake a limited page for full history.
+  mistake a limited page for the complete collection.
 - `snapshot.listAgentConfigPage` and `skill.listEventsPage` provide complete,
-  additive paged access while the legacy unpaged methods and response shapes
-  remain supported. Page limits are clamped to `1...100`.
+  additive paged access. Page limits are clamped to `1...100`.
 - Config snapshot records include optional `project_root`. Project-scoped
   records are returned only when that canonical root matches the active
-  service project context; legacy project rows without a binding are hidden.
+  service project context; project rows without a binding are hidden.
   Preview and rollback repeat the same binding check and include it in the
   confirmation token, so a snapshot from project A cannot be used in project B.
 - Config pages use `(created_at DESC, id DESC)` and event pages use
@@ -290,16 +286,12 @@ or expose write controls.
   publisher, package, version, and read-only provenance.
 - `source_kind="chatgpt-plugin-cache"` remains the backward-compatible wire
   value for those installed files; clients should present it as an installed
-  Codex plugin source, not as a runtime-only record. Legacy synthetic
-  `codex-runtime` rows are removed by schema migration and are excluded from
-  current projections if encountered.
+  Codex plugin source, not as a runtime-only record.
 - Provenance is derived deterministically from the cataloged path at read time.
   The service does not persist plugin manifests, introduce a plugin write path,
   or merge Codex plugin ownership with `skillManager.*` package ownership.
 - The product discovery path never invokes the Codex runtime inventory API and
-  does not use it as an authoritative source. Release validation may compare a
-  temporary read-only runtime inventory against the filesystem result without
-  persisting runtime rows.
+  does not use it as an authoritative source.
 - Read-only startup/reload, list, detail, analysis, conflict, app-search, and
   LLM skill-selection paths project current guarded Codex `[[skills.config]]`
   path overrides and `[plugins.<id>] enabled` values over cached native/plugin
@@ -486,8 +478,8 @@ or expose write controls.
   resolve to a direct-child skill-directory symlink or copied directory under
   that Agent's documented project/global install root. The service never calls
   Agent enable/disable methods for this operation and does not call the
-  external manager's partial `npx skills remove --agent` path, because current
-  manager versions can leave direct
+  external manager's partial `npx skills remove --agent` path, because that
+  behavior can leave direct
   `.agents/skills` consumers unchanged and remove package lock metadata for a
   partial request.
 - The physical-removal confirmation token binds selected Agents, exact target
@@ -565,9 +557,7 @@ or expose write controls.
   matching for project scope. Archived, structured subagent/review/compact,
   memory, host-created internal, and non-interactive `exec` carriers are
   excluded. Selected detail and message pages still read the guarded rollout on
-  demand; neither index is treated as transcript content. Legacy homes without
-  a compatible index retain the bounded rollout and
-  `session_index.jsonl`/`history.jsonl` fallback.
+  demand; neither index is treated as transcript content.
 - Agent-specific inventory filtering excludes internal conversation stores at
   discovery and metadata boundaries: Claude Code sidechains, `subagents`, tool
   results, and runtime lock state; OpenCode child sessions with a `parent_id`;
@@ -576,9 +566,7 @@ or expose write controls.
   heartbeat, ACP, and subagent session keys. Pi transcript branching and Hermes
   compression lineage remain part of their user-facing parent conversations.
 - Current OpenClaw summaries and messages come from each agent's
-  `<state>/agents/<id>/agent/openclaw-agent.sqlite`. Legacy per-agent
-  `sessions.json` and JSONL transcripts are migration/archive material and do
-  not enter the active list.
+  `<state>/agents/<id>/agent/openclaw-agent.sqlite`.
 - `session.previewLocalSessions` supports complete, stateless summary paging.
   A first page explicitly sends `paging_mode="keyset"`; a continuation sends
   the opaque `cursor` and matching `source_revision` (and may repeat the mode).
@@ -607,13 +595,13 @@ or expose write controls.
   all-scope recent descending summaries without server search, and bind the
   normalized agent, roots, project context, scope, sort, direction, search
   shape, excerpt bound, and content shape into the cursor query digest.
-- Legacy `scope`, `search`, `sort`, `direction`, `offset`, and `max_files`
-  behavior remains available when neither `paging_mode="keyset"` nor a cursor
-  is sent. An unmarked summary request does not silently enter keyset mode; the
-  native legacy wrapper retains `offset=0` and `max_files=800`. New paged summary
-  clients explicitly select keyset, omit `offset` and `max_files`, and
+- `scope`, `search`, `sort`, `direction`, `offset`, and `max_files` behavior
+  applies when neither `paging_mode="keyset"` nor a cursor is sent. An unmarked
+  summary request does not silently enter keyset mode; the native wrapper uses
+  `offset=0` and `max_files=800`. Paged summary clients explicitly select
+  keyset, omit `offset` and `max_files`, and
   apply scope, search, and sort locally over accepted summaries.
-- A legacy request with one exact non-empty `session_id` is a bounded detail
+- A request with one exact non-empty `session_id` is a bounded detail
   read, not a fan-out summary scan. It may use up to a 4 MiB primary head and a
   512 KiB tail within the unchanged aggregate request budget so large Codex
   JSONL wrappers do not hide early events beyond the summary window. This
@@ -638,8 +626,8 @@ or expose write controls.
   outer assistant role: commentary/progress, reasoning/thinking blocks,
   tool-bearing assistant text, tool-loop finishes, truncation, interruption,
   and errors are process `thinking`; only the terminal answer text is an
-  `agent_reply`. Tool calls remain independent `tool_call` items. Legacy
-  records without an explicit completion marker may retain assistant text as a
+  `agent_reply`. Tool calls remain independent `tool_call` items. Records
+  without an explicit completion marker may retain assistant text as a
   reply only when the record has no tool or non-final lifecycle evidence.
 - Message pages default to 40 items and allow at most 100. Each request scans at
   most 32 MiB of the fixed transcript snapshot and normally returns at most
@@ -734,7 +722,7 @@ or expose write controls.
   app-loaded config snapshots, and local sessions. It accepts `query`, optional
   `agent`, optional `limit_per_kind`, local-session roots/discovery settings,
   and project context.
-- Skill results exclude historical `missing`/Deleted catalog rows; those rows
+- Skill results exclude `missing`/Deleted catalog rows; those rows
   remain available only through the explicit Deleted filter and are never
   returned as unlocatable global-search destinations.
 - Results are grouped by `kind` (`skill`, `session`, or `config_history`) and
@@ -772,9 +760,8 @@ or expose write controls.
   input/output/total token estimates, and estimated cost rather than rendering
   the complete request inline. After an attempted send, the current app session
   keeps the complete redacted request and complete untrusted provider response
-  in its in-memory Task Preflight history, with date filtering (defaulting to
-  the latest seven calendar days), pagination, copy, and complete-detail views.
-  This history is not persisted and is cleared when the app exits.
+  in memory for copy and complete-detail views. This data is cleared when the
+  app exits.
 - Task Preflight provider transport uses the existing 10-minute LLM request
   ceiling, and the native operation timer leaves a short grace interval for the
   service to return and decode its terminal response. This avoids cancelling a
@@ -789,27 +776,20 @@ or expose write controls.
   limit before returning complete JSON, prompt-run and provider-call metadata
   use `parse_failed` with `response_truncated`; other missing or invalid result
   schemas use `parse_failed` with `response_schema_invalid`. Provider metadata
-  timestamps are epoch milliseconds; plausible legacy epoch-second records are
-  normalized on read.
+  timestamps use epoch milliseconds; epoch-second values are normalized on
+  read.
 - The confirmed response may return the untrusted Task Preflight task and draft
   to the native client for copy-only use in the current app session. Persisted
   prompt-run rows retain diagnostic metadata only for this action: `task` and
-  `draft_output` carry no value. Service startup nulls those two fields in
-  legacy Task Preflight rows without changing unrelated prompt-run content.
+  `draft_output` carry no value.
 
 ## Environment Overrides
 
 | Variable | Purpose |
 | --- | --- |
-| `SKILLS_COPILOT_APP_DATA_DIR` | Override app data/catalog directory for tests and screenshots |
+| `SKILLS_COPILOT_APP_DATA_DIR` | Override app data/catalog directory |
 | `SKILLS_COPILOT_HOME` | Override user home used by adapters |
 | `SKILLS_COPILOT_PROJECT_CWD` | Provide current project working directory |
 | `SKILLS_COPILOT_PROJECT_ROOT` | Provide project safety root |
 | `SKILLS_COPILOT_SERVICE_PATH` | Override sidecar path for local debugging |
 | `CODEX_HOME` | Override Codex user config home when safe for the active context |
-
-## Fixtures
-
-Protocol fixtures live under `fixtures/service-protocol/`. Each supported method
-must have dispatch coverage, status fixture coverage, and request/response
-fixture coverage where applicable.

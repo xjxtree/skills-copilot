@@ -30,10 +30,6 @@ Schema:
 
 Enable/disable semantics:
 
-## Fixture
-
-Minimal sample skill and config:
-
 ## Notes
 
 Precedence, live reload, platform differences, or known unknowns:

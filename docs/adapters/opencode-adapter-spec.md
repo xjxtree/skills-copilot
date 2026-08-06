@@ -48,10 +48,4 @@ context.
 - The canonical local store is the XDG data `opencode/opencode.db` SQLite
   database.
 - Archived rows and child sessions with a parent are excluded from the
-  user-facing session list. Legacy JSON sidecars are not an active source when
-  the database exists.
-
-## Fixtures
-
-opencode fixtures live under `fixtures/opencode/` and cover valid, malformed,
-configured-root, and permission behavior.
+  user-facing session list.

@@ -47,9 +47,6 @@ export async function runSmokeFlow(options, dependencies) {
     dependencies.terminateExistingApp();
     const launched = dependencies.launchApp(env);
     pid = launched.pid;
-    if (options.captureWindow) {
-      dependencies.captureAppWindow(pid, launched.windowId);
-    }
     if (fixture) {
       const status = await dependencies.runFixtureServiceSmoke(env);
       await dependencies.runFixtureProjectContextSmoke(env, fixture, status);

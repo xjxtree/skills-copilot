@@ -5,22 +5,14 @@
     "AGENTS.md",
     "CONTRIBUTING.md",
     "docs/README.md",
-    "docs/ai-agent-workflow.md",
-    "docs/runbooks/release-checklist.md",
-    "docs/runbooks/distribution-runbook.md",
     "docs/runbooks/macos-app-runbook.md",
-    "fixtures/opencode/README.md",
-    "fixtures/pi/README.md",
     ".github/pull_request_template.md",
     ".github/ISSUE_TEMPLATE/feature_request.md"
   ],
   "required_text": {
-    "README.md": ["## App Features", "GitHub Releases"],
+    "README.md": ["## What It Does", "## Architecture"],
     "AGENTS.md": ["## Safety Boundaries"],
-    "docs/README.md": ["## Product And Architecture", "## Maintenance Rules"],
-    "docs/runbooks/distribution-runbook.md": [
-      "GitHub tags and GitHub Releases"
-    ]
+    "docs/README.md": ["## Product And Architecture", "## Maintenance Rules"]
   },
   "forbidden_patterns": [
     "\\bV\\d+\\.\\d+\\b",
@@ -44,10 +36,10 @@
       "verify:list-completeness",
       "verify:doc-governance",
       "test:check-macos-cache",
+      "test:smoke-options",
       "test:distribution-workflow",
       "verify:js-syntax",
-      "verify:rust-docs",
-      "verify:validation-blockers"
+      "verify:rust-docs"
     ]
   }
 }

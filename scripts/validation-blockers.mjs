@@ -1,15 +1,7 @@
 export const validationBlockerCodes = [
   "locked-session",
   "window-not-found",
-  "no-ax-window",
-  "computer-use-timeout",
-  "remote-connection",
   "activation-failed",
-  "black-capture",
-  "flat-capture",
-  "transparent-capture",
-  "invalid-capture",
-  "screen-recording-permission",
   "stale-bundle",
   "tool-layer-unknown",
 ];
@@ -18,26 +10,6 @@ const classifierRules = [
   {
     code: "locked-session",
     patterns: [/locked-session/i, /CGSSessionScreenIsLocked\s*=?\s*Yes/i, /macOS session is locked/i],
-  },
-  {
-    code: "black-capture",
-    patterns: [/black-capture/i, /near black/i, /all black/i],
-  },
-  {
-    code: "flat-capture",
-    patterns: [/flat-capture/i, /near-zero visual variance/i, /near[- ]flat/i, /near[- ]single[- ]color/i],
-  },
-  {
-    code: "transparent-capture",
-    patterns: [/transparent-capture/i, /mostly transparent/i],
-  },
-  {
-    code: "invalid-capture",
-    patterns: [/invalid-capture/i, /zero dimensions/i, /dimensions are too small/i, /unsupported PNG/i],
-  },
-  {
-    code: "screen-recording-permission",
-    patterns: [/Screen Recording permission/i, /not authorized.*screen/i, /TCC.*screen/i],
   },
   {
     code: "stale-bundle",
@@ -49,18 +21,6 @@ const classifierRules = [
       /running .* from different bundle path/i,
       /bundle path mismatch/i,
     ],
-  },
-  {
-    code: "computer-use-timeout",
-    patterns: [/timeoutReached/i, /Computer Use.*timeout/i, /timed out.*Computer Use/i],
-  },
-  {
-    code: "remote-connection",
-    patterns: [/remoteConnection/i, /remote connection/i],
-  },
-  {
-    code: "no-ax-window",
-    patterns: [/no AX window/i, /0 AX windows/i, /System Events.*0 windows/i],
   },
   {
     code: "window-not-found",

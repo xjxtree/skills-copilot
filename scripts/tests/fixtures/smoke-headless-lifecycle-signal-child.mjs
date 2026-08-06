@@ -18,7 +18,6 @@ await runSmokeFlow(
   {
     allowStaleApp: false,
     bundleOnly: false,
-    captureWindow: false,
     checkLogs: false,
     fixtureData: true,
     headlessSidecar: true,

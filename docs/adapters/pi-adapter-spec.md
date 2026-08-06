@@ -44,8 +44,3 @@ canonical targets.
   `<agent-dir>/sessions` fallback, matching Pi's own lookup order.
 - Extension subagent artifacts are excluded; normal parent transcript branches
   remain part of the user-owned session.
-
-## Fixtures
-
-Pi fixtures live under `fixtures/pi/` and cover native roots, compatibility
-roots, malformed skills, and disposable writable evidence.

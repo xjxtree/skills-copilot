@@ -1,13 +1,13 @@
 # UI Delivery Standards
 
-This file captures the current native UI and runtime-validation contract.
+This file captures the current native UI contract.
 
 ## Product Shell
 
 - The maintained UI is the native macOS app in `apps/macos`.
 - Do not recreate `ui/`, `src-tauri/`, or Tauri IPC.
 - User-facing behavior should use existing SwiftUI/AppKit view, model, service,
-  localization, and fixture patterns.
+  and localization patterns.
 
 ## Current Surface Rules
 
@@ -39,7 +39,7 @@ This file captures the current native UI and runtime-validation contract.
 ## Responsive Loading Defaults
 
 - Startup prewarm and the explicit Refresh control are the default places for
-  expensive file scans, config reads, history reads, and analysis/statistics
+  expensive file scans, config reads, session reads, and analysis/statistics
   work. Refresh (`Command-R`) is the single global refresh action and always
   performs a full re-enumeration.
 - Native file events may add a path-free pending indicator to Refresh, but they
@@ -60,22 +60,6 @@ This file captures the current native UI and runtime-validation contract.
   needed for that action instead of rescanning unrelated agents, projects, or
   surfaces.
 
-## Runtime UI Validation
-
-- Screenshots used during a task must capture only the full app window and stay
-  outside the repository.
-- Full desktop screenshots are forbidden.
-- Fixture smoke is not a substitute for required real-local UI interaction.
-- If the session is locked or app-window capture is blocked, report the
-  canonical blocker in the task or pull request.
-
-## Validation
-
-- For UI changes, run focused Swift tests when appropriate and `pnpm
-  check:macos` for substantial or user-visible changes.
-- Use `pnpm verify:macos-ui-layout` through `pnpm check:macos`, not as a
-  replacement for the full gate.
-
 ## Formal List Completeness
 
 - Declare every user-visible formal list in
@@ -87,15 +71,11 @@ This file captures the current native UI and runtime-validation contract.
   members, and duplicate control IDs do not satisfy the verifier. Every paged
   entry also declares the exact target `control_anchor`; its status and
   full-access action must bind the same anchored footer/helper invocation.
-- Run `pnpm test:list-completeness` while changing the verifier and `pnpm
-  verify:list-completeness` for every list-surface change. New raw
-  prefix-defined collections passed to `ForEach`, `List`,
+- New raw prefix-defined collections passed to `ForEach`, `List`,
   `DenseDisclosureList`, or `ExpandableSummaryList`, including multiline,
   closure-initialized, wrapper, helper, and computed-property aliases, are
   rejected unless the complete collection remains reachable through a
   canonical, verified disclosure component. Taint propagation stays within the
   owning Swift type/member/function scope.
-- The manifest verifier proves declaration, source-path, and reachable-control
-  wiring. Native model/UI tests separately prove pagination state, Load More,
-  Load All, cancellation, Show All, canonical-list routing, and accessibility
-  behavior; neither layer substitutes for the other.
+- The manifest must keep declaration, source-path, and reachable-control wiring
+  aligned with pagination, full-access actions, and accessibility behavior.

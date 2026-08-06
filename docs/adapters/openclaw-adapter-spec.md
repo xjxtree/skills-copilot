@@ -53,10 +53,3 @@ roots or `.openclaw/skills` directories.
   `<state>/agents/<id>/agent/openclaw-agent.sqlite` database.
 - Only active routed user conversations are returned. Archived/deleted rows and
   cron, hook, heartbeat, ACP, and subagent keys are excluded.
-- Old `<state>/agents/<id>/sessions` JSON/JSONL files are legacy migration or
-  archive material and are never used as the active list source.
-
-## Fixtures
-
-OpenClaw fixtures live under `fixtures/openclaw/` and cover read-only roots,
-install boundaries, malformed records, and guarded config-toggle behavior.

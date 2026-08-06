@@ -32,10 +32,6 @@ const processName = appName;
 const appPath = resolve(process.env.SKILLS_COPILOT_APP ?? "dist/AgentCopilot.app");
 const appBinary = join(appPath, "Contents", "MacOS", appName);
 const serviceBinary = join(appPath, "Contents", "Resources", "skills-copilot-service");
-const screenshotPath = resolve(
-  process.env.SKILLS_COPILOT_SMOKE_SCREENSHOT ??
-    join(tmpdir(), "agent-copilot-smoke-completed.png"),
-);
 const knownBenignLogPatterns = [
   /appintents/i,
   /StateRestoration.*restoreWindowWithIdentifier/i,
@@ -711,31 +707,6 @@ print(String(data: data, encoding: .utf8)!)
   }
 }
 
-function captureAppWindow(pid, windowId) {
-  const sessionBlocker = currentSessionBlocker();
-  if (sessionBlocker) {
-    fail(formatValidationBlocker(sessionBlocker, "capture-window"));
-  }
-  tryRun("caffeinate", ["-u", "-t", "3"]);
-  sleepMs(1_000);
-  const result = tryRun("./script/capture_app_window.sh", [
-    appPath,
-    screenshotPath,
-    String(pid),
-    String(windowId),
-  ]);
-  if (!result.ok) {
-    fail(formatValidationBlocker(
-      result.error ||
-        result.stderr ||
-        result.stdout ||
-        `capture-window failed with status ${result.status ?? "unknown"} signal ${result.signal ?? "none"}`,
-      "capture-window",
-    ));
-  }
-  note(result.stdout);
-}
-
 function callService(method, params, env) {
   const envelope = callServiceEnvelope(method, params, env);
   if (!envelope.ok) {
@@ -1334,7 +1305,6 @@ try {
   const options = parseSmokeOptions(process.argv.slice(2), process.env);
   await runSmokeFlow(options, {
     assertRealOpencodeConfigUntouched,
-    captureAppWindow,
     checkSystemLogs,
     cleanupFixture(root) {
       cleanupOwnedTemporaryRoot(root);

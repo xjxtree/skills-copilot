@@ -16,7 +16,7 @@ struct MainWindowModelTests {
     }
 
     private func mainWindowConfigurationIsStable() throws {
-        try expectEqual(AppAccessibilityID.mainWindow, "skills-copilot.main-window", "Main window accessibility identifier should stay stable for Computer Use.")
+        try expectEqual(AppAccessibilityID.mainWindow, "skills-copilot.main-window", "Main window accessibility identifier should stay stable.")
         try expectEqual(AppAccessibilityID.mainContent, "skills-copilot.main-content", "Main content accessibility identifier should stay stable.")
         try expectEqual(MainWindowModel.windowIdentifierRawValue, AppAccessibilityID.mainWindow, "Window identifier should match the AX identifier.")
         try expectEqual(MainWindowModel.mainSceneIdentifier, "main", "The single main Window scene should keep a stable identifier.")

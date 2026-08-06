@@ -16,18 +16,10 @@ List the smallest sequence that reproduces the problem.
 
 ## Environment
 
-- Agent Copilot release:
-- macOS version and Mac architecture:
+- Mac architecture:
 - Affected agent family and surface:
-- Screenshot Privacy Mode enabled or disabled:
 
-## Privacy-Safe Evidence
+## Evidence
 
-Attach only a full Agent Copilot app-window capture. Do not attach the desktop,
-raw configuration, credentials, transcripts, usernames, or unredacted local
-paths. Replace local roots with `$HOME`, `<project-root>`, or `<redacted>`.
-
-## Additional Context
-
-Include relevant public links or sanitized fixture details. Do not paste secrets
-or private agent data.
+Include the smallest sanitized evidence that explains the failure. Do not paste
+credentials, private agent data, or unredacted local paths.

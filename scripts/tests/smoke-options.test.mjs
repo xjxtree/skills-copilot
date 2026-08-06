@@ -8,7 +8,6 @@ import { parseSmokeOptions } from "../lib/smoke-options.mjs";
 const emptyOptions = {
   allowStaleApp: false,
   bundleOnly: false,
-  captureWindow: false,
   checkLogs: false,
   fixtureData: false,
   headlessSidecar: false,
@@ -23,7 +22,6 @@ for (const [flag, property] of [
   ["--bundle-only", "bundleOnly"],
   ["--fixture-data", "fixtureData"],
   ["--keep-open", "keepOpen"],
-  ["--capture-window", "captureWindow"],
   ["--check-logs", "checkLogs"],
   ["--allow-stale-app", "allowStaleApp"],
 ]) {
@@ -102,7 +100,6 @@ test("headless sidecar requires fixture data", () => {
 for (const incompatible of [
   "--bundle-only",
   "--keep-open",
-  "--capture-window",
   "--check-logs",
 ]) {
   test(`headless sidecar rejects ${incompatible}`, () => {
@@ -184,7 +181,6 @@ function recordingDependencies(trace, overrides = {}) {
     ...overrides,
   };
   const forbidden = new Set([
-    "captureAppWindow",
     "checkSystemLogs",
     "launchApp",
     "queryRunningApps",
@@ -311,10 +307,11 @@ test("CI builds without launching and validates the bundled sidecar headlessly",
     terminationIndex > signingIndex,
     "Running app instances should stop only after a successful signed bundle build.",
   );
-  assert.match(localGate, /"\.\/script\/build_and_run\.sh",\s*\["--verify"\]/);
+  assert.match(localGate, /"\.\/script\/build_and_run\.sh",\s*\["--build-only"\]/);
+  assert.match(localGate, /\["pnpm", \["check:privacy"\]/);
   assert.match(
     localGate,
-    /\["pnpm", \["smoke:macos-app", "--", "--fixture-data", "--capture-window"\]/,
+    /\["pnpm", \["smoke:macos-app", "--", "--fixture-data", "--headless-sidecar"\]/,
   );
   assert.match(smokeScript, /Run pnpm build:macos before Smoke App Run/);
   assert.doesNotMatch(

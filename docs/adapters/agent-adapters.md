@@ -1,7 +1,7 @@
 # Agent Adapters
 
 This document defines supported local-agent scan roots, write scopes, and
-blocked operations. It is a current contract, not a version history.
+blocked operations.
 
 ## Global Rules
 
@@ -9,7 +9,7 @@ blocked operations. It is a current contract, not a version history.
   enabled state; they do not cache file contents.
 - Local-session inventories are also request-scoped and stateless. Keyset first
   pages require the explicit wire opt-in `paging_mode="keyset"`; unmarked
-  requests retain legacy offset/max-file behavior. Continuation re-inventories
+  requests retain offset/max-file behavior. Continuation re-inventories
   only authorized roots within the established directory, entry, file, sidecar,
   and byte budgets; any exhaustion is a terminal typed `safety_budget`
   limitation that retains accepted unique rows. Opaque cursors contain digests
@@ -49,8 +49,8 @@ blocked operations. It is a current contract, not a version history.
 
 | Adapter | Scan roots | Guarded writes | Install targets | Blocked |
 | --- | --- | --- | --- | --- |
-| Claude Code | User/project-ancestor `.claude/skills`, existing legacy `.claude/commands/*.md`, direct skill-directory links, and skill roots declared by effectively enabled installed plugins; matching `.agents/skills` directories only authorize same-scope link targets | Private Claude settings toggle path | Verified native target paths | Plugin writes, shared project settings writes unless separately scoped |
-| Codex | Verified user/project `.agents/skills`, read-only `$CODEX_HOME/skills`, manifest-declared roots in installed versioned `$CODEX_HOME/plugins/cache` copies, `/etc/codex/skills`, and project `.codex/config.toml` diagnostics; no runtime inventory call | User config override for native `.agents/skills` instances | Native `.agents/skills` roots | Project `.codex/config.toml` and plugin/admin/system/compat writes |
+| Claude Code | User/project-ancestor `.claude/skills`, existing `.claude/commands/*.md`, direct skill-directory links, and skill roots declared by effectively enabled installed plugins; matching `.agents/skills` directories only authorize same-scope link targets | Private Claude settings toggle path | Verified native target paths | Plugin writes, shared project settings writes unless separately scoped |
+| Codex | Verified user/project `.agents/skills`, read-only `$CODEX_HOME/skills`, manifest-declared roots in installed plugin cache copies, `/etc/codex/skills`, and project `.codex/config.toml` diagnostics; no runtime inventory call | User config override for native `.agents/skills` instances | Native `.agents/skills` roots | Project `.codex/config.toml` and plugin/admin/system/compat writes |
 | opencode | Native roots, official `.claude` / `.agents` compatibility roots, exact direct skill-link targets, and configured local `skills.paths` roots | Exact `permission.skill` overrides in verified config targets | Native opencode roots | `skills.urls` fetch, configured-root writes, compatibility-root installs |
 | Pi | Native user roots, cwd `.pi/skills`, ancestor `.agents/skills`, local `skills` settings paths, and installed local package manifests/convention roots in runtime precedence order | Guarded official `skills` array exact `+path`/`-path` overrides | Native Pi roots only | Package install/remove, `.agents` direct installs, scripts, credentials |
 | Hermes | Native `~/.hermes/skills` and explicit read-only `skills.external_dirs` | Global `skills.disabled` only | Native `~/.hermes/skills` | Project installs, `platform_disabled`, `external_dirs` writes, hub/URL/tap/update/uninstall/reset |
@@ -64,12 +64,12 @@ they resolve to absolute local paths; network configuration is never fetched.
 
 | Adapter | Effective skill/config sources | Effective local-session source | Explicit exclusions |
 | --- | --- | --- | --- |
-| Claude Code | `CLAUDE_CONFIG_DIR` (default `~/.claude`) user skills/settings and existing legacy `commands/*.md`; selected-project ancestor `.claude/skills` and `.claude/commands/*.md`; project-root settings; managed settings; skill roots from effectively enabled entries in `installed_plugins.json` | `<CLAUDE_CONFIG_DIR>/projects` | Disabled/uninstalled plugins, nested command files, generic cache walks, generated outputs, and undeclared roots |
+| Claude Code | `CLAUDE_CONFIG_DIR` (default `~/.claude`) user skills/settings and existing `commands/*.md`; selected-project ancestor `.claude/skills` and `.claude/commands/*.md`; project-root settings; managed settings; skill roots from effectively enabled entries in `installed_plugins.json` | `<CLAUDE_CONFIG_DIR>/projects` | Disabled/uninstalled plugins, nested command files, generic cache walks, generated outputs, and undeclared roots |
 | Codex | `$CODEX_HOME/skills`, user/project `.agents/skills`, user/project/admin config diagnostics, `/etc/codex/skills`, and complete manifest-declared skill roots from bounded installed plugin packages explicitly enabled in `$CODEX_HOME/config.toml` | `$CODEX_HOME/state_*.sqlite` thread index for summaries; selected `$CODEX_HOME/sessions` rollout for message detail | Runtime skill inventory as a product data source, generic plugin-store/cache walks, unconfigured or disabled plugin packages, staging/source-marketplace trees, archived/internal sessions, and arbitrary project roots |
-| opencode | XDG/`OPENCODE_CONFIG_DIR` native roots; absolute `OPENCODE_CONFIG`; inline `OPENCODE_CONFIG_CONTENT`; selected-project ancestor native/official compatibility roots; local `skills.paths` | XDG data `opencode/opencode.db` | `skills.urls`, remote organization config, disabled external/Claude compatibility sources, caches, and legacy JSON sidecar stores when the SQLite DB exists |
+| opencode | XDG/`OPENCODE_CONFIG_DIR` native roots; absolute `OPENCODE_CONFIG`; inline `OPENCODE_CONFIG_CONTENT`; selected-project ancestor native/official compatibility roots; local `skills.paths` | XDG data `opencode/opencode.db` | `skills.urls`, remote organization config, disabled external/Claude compatibility sources, caches, and JSON sidecar stores when the SQLite DB exists |
 | Pi | Installed project/global package skill roots, project/global configured `skills` paths, cwd `.pi/skills`, ancestor `.agents/skills` to the git root, `~/.pi/agent/skills`, and `~/.agents/skills`; first effective name wins | `PI_CODING_AGENT_SESSION_DIR`, configured `sessionDir`, or `<agent-dir>/sessions` | `--skill` process-only CLI arguments, `--no-skills` process state, temporary package trials, remote package indexes, caches, and generated outputs |
-| Hermes | `HERMES_HOME` (default `~/.hermes`) native skills/config plus explicit local `skills.external_dirs` | `<HERMES_HOME>/state.db` | Hubs, taps, URLs, legacy JSON stores when the canonical DB exists, caches, and inferred project roots |
-| OpenClaw | `OPENCLAW_STATE_DIR`/profile state, `OPENCLAW_CONFIG_PATH`, workspace/personal shared roots, managed skills, runtime-bundled roots, effectively enabled plugin manifest roots, configured extra dirs, agent/bundled allowlists, and eligibility metadata | `<state>/agents/<id>/agent/openclaw-agent.sqlite`; legacy JSON/JSONL is ignored | Arbitrary selected repositories, disabled plugins, ClawHub/Git/network sources, broad extension/cache walks, temporary workspaces, and guessed installation paths |
+| Hermes | `HERMES_HOME` (default `~/.hermes`) native skills/config plus explicit local `skills.external_dirs` | `<HERMES_HOME>/state.db` | Hubs, taps, URLs, JSON stores when the canonical DB exists, caches, and inferred project roots |
+| OpenClaw | `OPENCLAW_STATE_DIR`/profile state, `OPENCLAW_CONFIG_PATH`, workspace/personal shared roots, managed skills, runtime-bundled roots, effectively enabled plugin manifest roots, configured extra dirs, agent/bundled allowlists, and eligibility metadata | `<state>/agents/<id>/agent/openclaw-agent.sqlite` | Arbitrary selected repositories, disabled plugins, ClawHub/Git/network sources, broad extension/cache walks, temporary workspaces, and guessed installation paths |
 
 All filesystem walkers prune VCS, cache, temporary, build, distribution,
 coverage, quarantine, archive, and language-cache directories before inspecting
@@ -85,10 +85,10 @@ before projecting the common `user_message`, `agent_reply`, `thinking`, and
 
 | Agent | Terminal Agent reply | Thinking / process evidence |
 | --- | --- | --- |
-| Claude Code | Assistant text ending the turn (`end_turn` or `stop_sequence`); legacy assistant text only when no non-final evidence exists | Typed thinking/reasoning plus assistant text on `tool_use`, truncation, interruption, or error records |
+| Claude Code | Assistant text ending the turn (`end_turn` or `stop_sequence`); assistant text without typed final evidence only when no non-final evidence exists | Typed thinking/reasoning plus assistant text on `tool_use`, truncation, interruption, or error records |
 | Codex | Assistant message with `phase=final_answer` | `phase=commentary`, `agent_reasoning`, and other reasoning/thinking records |
-| opencode | Assistant text with `finish=stop`; legacy missing-finish text only when the same message has no tool part | Assistant text with any other explicit finish, or missing finish plus a tool part; reasoning parts remain thinking |
-| Pi | Assistant text with `stopReason=stop`; legacy assistant text only when no non-final evidence exists | Thinking blocks and assistant text on `toolUse`, length, aborted, interrupted, or error records |
+| opencode | Assistant text with `finish=stop`; missing-finish text only when the same message has no tool part | Assistant text with any other explicit finish, or missing finish plus a tool part; reasoning parts remain thinking |
+| Pi | Assistant text with `stopReason=stop`; assistant text without typed final evidence only when no non-final evidence exists | Thinking blocks and assistant text on `toolUse`, length, aborted, interrupted, or error records |
 | Hermes | Assistant content on a row without tool-call fields | `reasoning`, plus assistant content on a tool-bearing row |
 | OpenClaw | Assistant text blocks on an event without a tool-call block | Thinking/reasoning blocks and assistant text co-located with a tool call |
 
@@ -112,19 +112,19 @@ without silently treating those limits as terminal completeness.
 - The adapter never calls `codex app-server` or `skills/list` for skill
   discovery. Persisted files are the only catalog inventory source.
 - The plugin store/cache directory is never a generic scan root. Installed
-  plugin discovery considers only bounded marketplace/package/version records,
+  plugin discovery considers only bounded installed package records,
   keeps only packages whose config state is explicitly `enabled = true`, reads
   a bounded regular
   `.codex-plugin/plugin.json`, rejects absolute, parent-traversing, and escaping
-  manifest paths, and selects one deterministic current version per
-  marketplace/plugin pair. It scans every valid skill in the manifest-declared
+  manifest paths, and selects one deterministic active copy per plugin. It
+  scans every valid skill in the manifest-declared
   root. Unconfigured packages, staging, marketplace source, scripts, and
   unrelated cache files are not scanned or executed.
 - Plugin skills are cataloged with the plugin namespace and a logical
   `$CODEX_HOME/plugins/...` display path; the physical cache path is not shown
   as the skill source. Rows retain `source_kind="chatgpt-plugin-cache"` only as
   a wire-compatibility value, and the UI labels them as installed Codex plugin
-  files. Legacy synthetic runtime rows are removed by catalog migration.
+  files.
 - Startup and manual reload project the current guarded Codex
   `[[skills.config]]` path overrides and `[plugins.<id>] enabled` state over
   current native/plugin list, detail, and analysis records. This read-only
@@ -184,7 +184,7 @@ without silently treating those limits as terminal completeness.
   uninstall when it has a separable target under a documented install root, or
   complete uninstall, but cannot be replaced from ZIP by the app.
   Do not add page flags or alter the manager command shape without a parsed
-  token fixture that proves the external manager contract.
+  manager response that proves the external contract.
 - Install uses the manager symlink flow; the native UI does not offer copy
   distribution.
 - Local package intake has two explicit entries. Direct folder installation
@@ -246,7 +246,6 @@ New or expanded adapter support needs verified evidence for:
 - project inheritance behavior;
 - config file path and schema;
 - enable/disable semantics;
-- fixture data;
 - malformed input behavior;
 - read-only fallback behavior when write semantics are absent.
 
@@ -278,5 +277,5 @@ root conventions.
 - Import/install must copy only confirmed local `SKILL.md` records into verified
   app-controlled or native roots.
 - Adapter config snapshots must redact secrets before persistence or display.
-- Any future write expansion must include disposable evidence, fixture tests,
-  rollback tests, and privacy verification.
+- Any future write expansion must include disposable evidence, rollback proof,
+  and privacy review.
