@@ -8,7 +8,7 @@ coding agents working in this repository.
 - Keep this file short, operational, and safe.
 - Put human-facing overview in `README.md`.
 - Keep `docs/` limited to current contracts and reusable procedures; do not
-  store task notes, plans, logs, or handoff notes there.
+  store task notes, plans, command output, logs, or handoff notes there.
 
 ## Architecture Rules
 
@@ -22,10 +22,9 @@ coding agents working in this repository.
   derive from startup/manual-refresh cache and avoid expensive reads or scans by
   default. Fetch fresh data only for explicit refresh, startup prewarm, or
   consistency-bound flows such as config edit/write/rollback.
-- Service behavior changes must keep `docs/service-protocol.md` in sync.
 - Do not recreate `ui/`, `src-tauri/`, or Tauri IPC.
 
-## Adapter Scope
+## Product Adapter Scope
 
 - Supported adapter families: Claude Code, Codex, opencode, Pi, Hermes, and
   OpenClaw.
@@ -41,6 +40,10 @@ coding agents working in this repository.
   confirmation.
 
 ## Safety Boundaries
+
+Provider calls, LLM output, and skill scripts below refer to Agent Copilot's
+runtime features and the content it manages. These rules constrain product
+behavior; coding-agent work follows the task scope and editing rules below.
 
 - No cloud sync, accounts, telemetry, anonymous crash reports, or uncontrolled
   outbound network calls.
@@ -64,13 +67,10 @@ coding agents working in this repository.
 - Manual UI inspection and tools such as Computer Use are optional. Agents may
   choose any suitable method when it helps the task.
 
-## Common Commands
+## Build And Run
 
-```sh
-pnpm check:macos
-pnpm build:macos
-pnpm dev:macos
-```
+Before building or launching the app, read the
+[macOS runbook](docs/runbooks/macos-app-runbook.md) for commands.
 
 ## Read Before Editing
 
@@ -90,9 +90,8 @@ pnpm dev:macos
 - Keep edits scoped to the requested task and relevant architecture boundary.
 - Prefer existing project patterns over new abstractions.
 - Update docs when behavior, commands, architecture, validation flow, or UI
-  state changes.
+  state changes; service behavior changes must update `docs/service-protocol.md`.
 - Before committing, check the working tree and include only intended changes.
-- Keep plans, command output, and handoff notes outside repository docs.
 - For multi-agent parallel work, create one isolated git worktree and branch per
   task. Agents must stay in their assigned worktree and branch. Inspect each
   diff before integration, then run the required gate once on the integrated
